@@ -672,6 +672,54 @@ Returns list of (position heading-text embedding) tuples."
             (replace-match "")
             (set-buffer-modified-p t)))))))
 
+;;;###autoload
+(defun org-roam-semantic-clean-properties ()
+  "Remove all :EMBEDDING: properties from every org-roam file.
+Scans all files tracked by org-roam, prompts for confirmation, then
+deletes legacy EMBEDDING property lines left from the old property-based
+storage backend.  Saves each modified file and reports how many files and
+property entries were cleaned."
+  (interactive)
+  (let ((files (org-roam-list-files))
+        (files-to-clean '())
+        (total-count 0))
+    (dolist (file files)
+      (with-temp-buffer
+        (insert-file-contents file)
+        (let ((count 0))
+          (goto-char (point-min))
+          (while (re-search-forward "^[ \t]*:EMBEDDING:[ \t]*.*$" nil t)
+            (cl-incf count))
+          (when (> count 0)
+            (push (cons file count) files-to-clean)
+            (cl-incf total-count count)))))
+    (if (null files-to-clean)
+        (message "No :EMBEDDING: properties found.")
+      (when (yes-or-no-p
+             (format "Remove %d :EMBEDDING: propert%s across %d file%s? "
+                     total-count (if (= total-count 1) "y" "ies")
+                     (length files-to-clean)
+                     (if (= (length files-to-clean) 1) "" "s")))
+        (let ((cleaned-files 0)
+              (cleaned-props 0))
+          (dolist (pair files-to-clean)
+            (let ((file (car pair))
+                  (count 0))
+              (with-current-buffer (find-file-noselect file)
+                (save-excursion
+                  (org-with-wide-buffer
+                    (goto-char (point-min))
+                    (while (re-search-forward "^[ \t]*:EMBEDDING:[ \t]*.*\n?" nil t)
+                      (replace-match "")
+                      (cl-incf count))))
+                (when (> count 0)
+                  (save-buffer)
+                  (cl-incf cleaned-files)
+                  (cl-incf cleaned-props count)))))
+          (message "Cleaned %d :EMBEDDING: propert%s from %d file%s."
+                   cleaned-props (if (= cleaned-props 1) "y" "ies")
+                   cleaned-files (if (= cleaned-files 1) "" "s")))))))
+
 ;;; Main Embedding Functions
 
 (defun org-roam-semantic--embed-query-sync (query-text)
