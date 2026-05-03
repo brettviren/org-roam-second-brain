@@ -52,18 +52,76 @@ bd close <id>         # Complete work
 
 ## Build & Test
 
-_Add your build and test commands here_
+This is an Emacs Lisp package — there is no build step. Byte-compile to check for errors:
 
 ```bash
-# Example:
-# npm install
-# npm test
+emacs --batch -L . -f batch-byte-compile org-roam-vector-search.el
 ```
 
 ## Architecture Overview
 
-_Add a brief overview of your project architecture_
+This package (`org-roam-vector-search.el`) adds vector embedding support and semantic
+search to org-roam. It calls an OpenAI-compatible embeddings API, stores vectors in a
+dedicated SQLite database, and provides cosine-similarity search over org-roam nodes.
+
+### Primary source file
+
+All work happens in `org-roam-vector-search.el`. Read it before implementing any task.
+
+### Key architectural decisions
+
+Retrieve the full record with `bd memories architecture`. Summary:
+
+- **Storage**: `org-roam-embeddings.db` — a separate SQLite file alongside `org-roam.db`.
+  Uses Emacs 29 built-in sqlite API (`sqlite-open`, `sqlite-execute`, `sqlite-select`).
+  **Never use emacsql.**
+- **DB schema**: two tables — `file_hashes (file, content_hash, updated_at)` and
+  `embeddings (node_id, chunk_type, embedding)`. `chunk_type` is `'leading'` or `'full'`.
+- **Chunking**: only org-roam nodes (headings with `:ID:`) are embedded. Each gets two
+  chunk types. Heading text is normalized (strip TODO keywords, priority cookies, tags,
+  timestamps). `'leading'` = ancestor breadcrumb + node's pre-child body.
+  `'full'` = leading + all recursive descendant content.
+- **Async indexing**: embedding generation uses `url-retrieve` with a sequential drain
+  queue. **Search queries use synchronous** `url-retrieve-synchronously`.
+- **Change detection**: file-level SHA256 hash of normalized content. Hash change deletes
+  all embeddings for nodes in that file and requeues them.
+- **sqlite-vec**: optional extension; fall back to TEXT storage if unavailable. Cosine
+  similarity is always computed in Emacs Lisp.
+- **Errors**: all async errors and chunk-size warnings go to `*org-roam-semantic-errors*`.
+
+## Working on a Beads Issue
+
+Each session is assigned one issue ID. Follow this orientation sequence:
+
+```bash
+bd prime                        # load workflow context
+bd show <your-issue-id>         # read description AND design notes
+# For each dependency listed under "Blocked by":
+bd show <blocker-id>            # understand the APIs you build on
+bd memories architecture        # review cross-cutting decisions
+```
+
+Then read `org-roam-vector-search.el` to understand existing code.
+
+Claim the issue before writing code:
+```bash
+bd update <your-issue-id> --claim
+```
+
+If a dependency's issue describes a function signature or table schema, implement exactly
+what is specified there — do not invent alternatives. If you find a genuine conflict or
+ambiguity, file a new beads issue describing it rather than silently choosing an approach.
 
 ## Conventions & Patterns
 
-_Add your project-specific conventions here_
+- **Naming**: public functions `org-roam-semantic-<verb>-<noun>`, internal functions
+  `org-roam-semantic--<verb>-<noun>` (double dash), customizable variables
+  `org-roam-semantic-<noun>`.
+- **No comments explaining what code does** — only comments for non-obvious WHY.
+- **No emacsql** — use only Emacs 29 built-in sqlite functions.
+- **No property drawer writes** — embeddings live in the DB only, never written back to
+  org files (unless `org-roam-semantic-clean-old-properties` is set, which removes old
+  EMBEDDING properties).
+- **Lexical binding** — all files must have `;;; -*- lexical-binding: t; -*-`.
+- **Error routing**: use `org-roam-semantic--log-error` (defined in issue `w82`) to send
+  warnings and errors to `*org-roam-semantic-errors*`; never use `error` for async paths.
