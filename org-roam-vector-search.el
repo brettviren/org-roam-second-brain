@@ -132,6 +132,13 @@ falls back to TEXT storage silently."
   :type '(choice (const :tag "Disabled" nil) file)
   :group 'org-roam-vector-search)
 
+(defcustom org-roam-semantic-update-on-save t
+  "When non-nil, automatically reindex the current org-roam file after saving.
+Uses the async embedding pipeline; only nodes whose file hash changed are
+re-embedded.  Set to nil to disable auto-indexing."
+  :type 'boolean
+  :group 'org-roam-vector-search)
+
 ;;; Utility Functions
 
 (defun org-roam-semantic-get-similar-data (query-text &optional limit cutoff)
@@ -1037,6 +1044,66 @@ progress in the minibuffer."
              queued-nodes (if (= queued-nodes 1) "" "s")
              queued-files (if (= queued-files 1) "" "s"))))
 
+;;;###autoload
+(defun org-roam-semantic-sync-heading ()
+  "Synchronously regenerate embeddings for the org-roam node at point.
+Finds the nearest enclosing heading with an :ID: property, builds both
+chunk types, enforces size constraints, and writes to the DB immediately.
+Errors are shown in the minibuffer."
+  (interactive)
+  (unless (derived-mode-p 'org-mode)
+    (user-error "Not in an org-mode buffer"))
+  (let* ((file (or (buffer-file-name) (user-error "Buffer has no associated file")))
+         (node-id (save-excursion
+                    (unless (org-at-heading-p)
+                      (or (ignore-errors (org-back-to-heading t))
+                          (user-error "Not inside a heading")))
+                    (let ((id (org-entry-get (point) "ID")))
+                      (while (and (null id) (org-up-heading-safe))
+                        (setq id (org-entry-get (point) "ID")))
+                      id)))
+         (_ (unless node-id
+              (user-error "No enclosing org-roam node (:ID: heading) found")))
+         (file-title (org-roam-semantic--get-title file))
+         (nodes (org-roam-semantic--discover-nodes file))
+         (node-entry
+          (cl-find-if
+           (lambda (entry)
+             (let* ((element (nth 0 entry))
+                    (level (nth 2 entry))
+                    (eid (if (> level 0)
+                             (org-element-property :ID element)
+                           (org-element-map element 'node-property
+                             (lambda (np)
+                               (when (string= (org-element-property :key np) "ID")
+                                 (org-element-property :value np)))
+                             nil t 'headline))))
+               (equal eid node-id)))
+           nodes))
+         (_ (unless node-entry
+              (user-error "Node %s not found in parsed file" node-id)))
+         (leading (org-roam-semantic--enforce-chunk-size
+                   (org-roam-semantic--build-leading-chunk node-entry file-title)
+                   node-id "leading"))
+         (full (org-roam-semantic--enforce-chunk-size
+                (org-roam-semantic--build-full-chunk node-entry file-title)
+                node-id "full")))
+    (condition-case err
+        (progn
+          (when leading
+            (let ((vec (org-roam-semantic--embed-query-sync leading)))
+              (if vec
+                  (org-roam-semantic--db-upsert-embedding node-id "leading" vec)
+                (error "Embedding API returned nil for leading chunk"))))
+          (when full
+            (let ((vec (org-roam-semantic--embed-query-sync full)))
+              (if vec
+                  (org-roam-semantic--db-upsert-embedding node-id "full" vec)
+                (error "Embedding API returned nil for full chunk"))))
+          (message "org-roam-semantic: updated %s" node-id))
+      (error (message "org-roam-semantic sync-heading: %s"
+                      (error-message-string err))))))
+
 ;;; Error Reporting
 
 (defun org-roam-semantic--log-error (format-string &rest args)
@@ -1616,16 +1683,17 @@ wrap contents under a synthetic top-level heading using #+title or filename."
     contents))
 
 ;;; Auto-embedding hook
-(defun org-roam-semantic--update-on-save ()
-  "Update embeddings for current file on save."
-  (when (and (derived-mode-p 'org-mode)
-             (buffer-file-name)
-             (org-roam-file-p))
-    ;; Always use chunking for optimal semantic search
-    (org-roam-semantic-generate-chunks-for-file (buffer-file-name))))
 
-;; Add the hook
-(add-hook 'before-save-hook 'org-roam-semantic--update-on-save)
+(defun org-roam-semantic--after-save ()
+  "Reindex the current org-roam file after saving, if enabled."
+  (when org-roam-semantic-update-on-save
+    (org-roam-semantic-sync-file (buffer-file-name))))
+
+(defun org-roam-semantic--setup-buffer-hook ()
+  "Add a buffer-local after-save-hook to reindex this org-roam file."
+  (add-hook 'after-save-hook #'org-roam-semantic--after-save nil 'local))
+
+(add-hook 'org-roam-find-file-hook #'org-roam-semantic--setup-buffer-hook)
 
 ;;; Key Bindings for Vector Search
 
