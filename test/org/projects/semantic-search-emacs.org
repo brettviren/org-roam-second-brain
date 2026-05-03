@@ -1,0 +1,39 @@
+:PROPERTIES:
+:ID:       test-project-semantic-search-0001
+:END:
+#+title: Semantic Search for Emacs Org-Roam
+#+filetags: :project:active:
+
+Build a production-quality semantic search layer on top of org-roam using
+local embedding models and a SQLite vector store. The goal is to let users
+find related notes by meaning rather than keywords, surfacing connections
+that would otherwise remain hidden in a large knowledge base.
+
+* Goals
+:PROPERTIES:
+:ID:       test-project-semantic-search-goals-0001
+:END:
+
+- Sub-100ms search latency for corpora up to 10,000 nodes
+- Full offline operation using local llama.cpp inference
+- Async indexing so Emacs UI stays responsive during large re-indexing runs
+- Cosine similarity computed in Emacs Lisp for portability
+
+* Architecture Decisions
+:PROPERTIES:
+:ID:       test-project-semantic-search-arch-0001
+:END:
+
+The main architectural tension was between using emacsql (which the rest of
+org-roam uses) and the Emacs 29 built-in sqlite API. We chose the built-in
+API to avoid a heavy dependency and because emacsql adds an abstraction layer
+that doesn't help when working with binary BLOB columns for embedding vectors.
+
+Chunking strategy: two chunks per node (leading and full) lets search balance
+precision (leading chunks are shorter and topic-focused) against recall (full
+chunks capture everything under a heading including sub-headings).
+
+* Status
+
+Currently in active development. Core chunking and storage are complete.
+Async indexing pipeline and change detection are next milestones.

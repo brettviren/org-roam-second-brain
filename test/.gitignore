@@ -1,0 +1,20 @@
+# Emacs compiled files and caches
+eln-cache/
+*.elc
+*.el~
+
+# Straight.el package manager (reinstalled automatically)
+straight/
+
+# Emacs runtime state
+bookmarks
+auto-save-list/
+recentf
+place
+.org-id-locations
+transient/
+lsp/
+.cache/
+
+# org-roam and embeddings databases (generated, not source)
+org/*.db

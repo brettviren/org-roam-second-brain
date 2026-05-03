@@ -1,0 +1,42 @@
+:PROPERTIES:
+:ID:       test-blog-local-ai-emacs-0001
+:END:
+#+title: Running AI Locally Inside Emacs
+#+filetags: :blog:draft:
+
+Draft blog post exploring how to integrate local language model inference
+into an Emacs workflow without depending on cloud APIs.
+
+* Why Local?
+:PROPERTIES:
+:ID:       test-blog-local-ai-emacs-why-0001
+:END:
+
+Cloud AI APIs are convenient but introduce privacy concerns, latency, and
+ongoing costs that make them unsuitable for a personal knowledge management
+system that processes private notes. A local llama.cpp server running a
+quantized model solves all three problems: your notes never leave your
+machine, inference latency is under a second on modern hardware, and the
+only cost is electricity.
+
+* The Technical Stack
+:PROPERTIES:
+:ID:       test-blog-local-ai-emacs-stack-0001
+:END:
+
+The stack is surprisingly simple:
+
+1. *llama.cpp* provides the inference server with an OpenAI-compatible API
+2. *Emacs url.el* makes HTTP calls to the local server
+3. *Emacs sqlite* (built in since Emacs 29) stores the resulting vectors
+4. *Emacs Lisp* computes cosine similarity — no external dependencies needed
+
+The entire system runs without any Python, without conda environments,
+and without network access after the model is downloaded.
+
+* Conclusion
+
+The combination of llama.cpp's embedding endpoint and Emacs's built-in
+sqlite makes it possible to build a fully local semantic search system
+inside Emacs with minimal dependencies. The result is fast, private, and
+completely reproducible.

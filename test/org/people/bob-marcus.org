@@ -1,0 +1,30 @@
+:PROPERTIES:
+:ID:       test-person-bob-marcus-0001
+:END:
+#+title: Bob Marcus
+#+filetags: :person:
+
+Bob Marcus is a software engineer specializing in Emacs Lisp and developer
+tooling. He maintains several popular packages in the org-mode ecosystem
+and has deep experience with org-roam's database layer and query system.
+
+* Contact
+:PROPERTIES:
+:ID:       test-person-bob-marcus-contact-0001
+:END:
+
+- Email: bob@example.org
+- Mastodon: @bobmarcus@emacs.ch
+
+* Collaboration Notes
+
+Bob helped diagnose an early performance problem with the synchronous
+embedding approach, pointing out that url-retrieve-synchronously blocks
+the Emacs UI and suggesting the async queue pattern that this project now
+uses for indexing. He also reviewed the sqlite schema and confirmed that
+a composite primary key on (node_id, chunk_type) is the right approach
+for preventing duplicate embeddings.
+
+* Pending Follow-ups
+
+- [ ] Review his patch for the org-roam-db-query optimization

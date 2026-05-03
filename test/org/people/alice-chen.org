@@ -1,0 +1,31 @@
+:PROPERTIES:
+:ID:       test-person-alice-chen-0001
+:END:
+#+title: Alice Chen
+#+filetags: :person:
+
+Alice Chen is a machine learning researcher focused on natural language
+processing and knowledge representation systems. She has been working on
+embedding-based retrieval systems for three years, with particular interest
+in sparse versus dense retrieval trade-offs.
+
+* Contact
+:PROPERTIES:
+:ID:       test-person-alice-chen-contact-0001
+:END:
+
+- Email: alice@example.org
+- GitHub: @achen-ml
+
+* Notes
+
+Alice introduced me to the idea of using cosine similarity for document
+retrieval rather than exact keyword matching. She recommended the
+nomic-embed model family for its balance of quality and local inference
+speed. Her thesis work on hierarchical document chunking has been a
+significant influence on the chunking design in this project.
+
+* Pending Follow-ups
+
+- [ ] Share the benchmarking results from the October 2024 evaluation
+- [ ] Ask about the new Matryoshka embedding technique she mentioned

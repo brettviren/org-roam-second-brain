@@ -58,6 +58,41 @@ This is an Emacs Lisp package — there is no build step. Byte-compile to check 
 emacs --batch -L . -f batch-byte-compile org-roam-vector-search.el
 ```
 
+Note: batch-byte-compile will fail with "Cannot open load file: org-roam" unless you
+add all transitive dependencies to `-L`. This is expected — use it only to catch
+syntax errors in isolated Lisp forms.
+
+### Interactive Test Environment
+
+A self-contained Emacs environment lives in `test/`:
+
+```bash
+emacs --init-directory=test
+```
+
+- **First run** requires network access; straight.el downloads and compiles all packages
+  into `test/straight/` (cached for subsequent runs).
+- The test org-roam directory is `test/org/` — pre-seeded with nodes in
+  `people/`, `projects/`, `ideas/`, `admin/`, and `blog/`.
+- The embedding server must be running at `http://localhost:8080` for semantic
+  search features. Start it with:
+  ```bash
+  llama-server --model nomic-embed-text-v1.5.Q8_0.gguf --port 8080 --embedding
+  ```
+- After launching Emacs, run `M-x org-roam-db-sync` once to populate the org-roam
+  database from the test nodes.
+
+**Resetting test state** (drops both databases, keeps org files):
+
+```bash
+rm -f test/org/org-roam.db test/org/org-roam-embeddings.db
+```
+
+**Adding test nodes**: drop `.org` files into the appropriate `test/org/<type>/`
+subdirectory and re-run `M-x org-roam-db-sync`. Each node needs a file-level
+`:ID:` property; use `test-<type>-<slug>-NNNN` as the ID format to avoid
+collisions with real notes.
+
 ## Architecture Overview
 
 This package (`org-roam-vector-search.el`) adds vector embedding support and semantic

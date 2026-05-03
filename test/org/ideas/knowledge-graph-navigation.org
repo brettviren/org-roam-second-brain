@@ -1,0 +1,38 @@
+:PROPERTIES:
+:ID:       test-idea-knowledge-graph-nav-0001
+:END:
+#+title: Navigating Knowledge Graphs with Semantic Proximity
+#+filetags: :idea:
+
+Most knowledge management tools treat documents as a flat bag of keywords.
+A more powerful mental model treats them as nodes in a graph where edge weight
+represents semantic proximity. Rather than searching for documents, you
+navigate from your current context outward through conceptually nearby nodes.
+
+* The Core Insight
+:PROPERTIES:
+:ID:       test-idea-knowledge-graph-nav-insight-0001
+:END:
+
+When you are writing about topic A, the most valuable related notes are not
+necessarily the ones that share keywords with A — they are the ones that share
+concepts, assumptions, or problem framings with A. Embedding-based similarity
+captures this conceptual proximity in a way that term frequency cannot.
+
+The practical implication: a "similar notes" sidebar that updates as you type
+can surface connections you would not have thought to search for explicitly.
+This turns the note-taking tool into a thinking partner rather than a retrieval
+system.
+
+* Implementation Ideas
+
+- Incremental embedding updates: recompute only changed sections on save
+- Decay-weighted relevance: recent notes score higher for the same similarity
+- Cluster detection: group notes by semantic neighborhood for visualization
+- Cross-modal similarity: compare notes to calendar events or email threads
+
+* Related Reading
+
+Semantic similarity in information retrieval goes back to latent semantic
+analysis in the 1990s, but modern dense retrieval using transformer-based
+embeddings achieves far higher quality at practical corpus sizes.

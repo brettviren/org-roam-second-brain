@@ -1,0 +1,54 @@
+:PROPERTIES:
+:ID:       test-admin-dev-setup-0001
+:END:
+#+title: Development Environment Setup
+#+filetags: :admin:
+
+Instructions for setting up a local development and testing environment
+for the org-roam-second-brain package, including the embedding server
+and test org-roam directory.
+
+* Prerequisites
+:PROPERTIES:
+:ID:       test-admin-dev-setup-prereqs-0001
+:END:
+
+- Emacs 29.1 or later (required for built-in sqlite support)
+- org-roam 2.2 or later
+- llama.cpp server built with BLAS support for reasonable embedding speed
+- nomic-embed-text-v1.5 GGUF model file (768-dimensional output)
+
+* Starting the Embedding Server
+
+#+begin_src bash
+llama-server --model nomic-embed-text-v1.5.Q8_0.gguf \
+             --port 8080 \
+             --embedding \
+             --ctx-size 2048
+#+end_src
+
+Verify it is running with:
+
+#+begin_src bash
+curl http://localhost:8080/v1/models | jq '.data[0].id'
+#+end_src
+
+* Running the Test Environment
+
+#+begin_src bash
+emacs --init-directory=test
+#+end_src
+
+This launches Emacs with the test/ directory as the user-emacs-directory.
+Straight.el handles package installation automatically on first run (requires
+network access). Subsequent runs use the cached packages in test/straight/.
+
+* Resetting Test State
+
+To start fresh, delete the org-roam database and embeddings database:
+
+#+begin_src bash
+rm -f test/org/org-roam.db test/org/org-roam-embeddings.db
+#+end_src
+
+Then re-sync inside Emacs with: =M-x org-roam-db-sync=
