@@ -1068,6 +1068,39 @@ while ignoring organizational edits (tag changes, rescheduling)."
                  (string-trim
                   (replace-regexp-in-string "[ \t\n\r]+" " " (buffer-string))))))
 
+(defun org-roam-semantic--invalidate-file-if-changed (file)
+  "Compare FILE's current content hash to the stored hash.
+If different or absent, delete all embeddings for nodes in FILE and update
+the file_hashes row in a single transaction.  Return t if invalidation
+occurred (caller should re-queue embeddings), nil if file is up to date."
+  (let* ((db (org-roam-semantic--db-open))
+         (new-hash (org-roam-semantic--file-content-hash file))
+         (stored (car (sqlite-select db
+                        "SELECT content_hash FROM file_hashes WHERE file = ?"
+                        (list file))))
+         (stored-hash (when stored (car stored))))
+    (if (equal new-hash stored-hash)
+        nil
+      (let ((node-ids (mapcar #'car
+                               (org-roam-db-query
+                                [:select id :from nodes :where (= file $s1)]
+                                file))))
+        (sqlite-execute db "BEGIN")
+        (condition-case err
+            (progn
+              (dolist (node-id node-ids)
+                (sqlite-execute db
+                  "DELETE FROM embeddings WHERE node_id = ?"
+                  (list node-id)))
+              (sqlite-execute db
+                "INSERT OR REPLACE INTO file_hashes (file, content_hash, updated_at) VALUES (?, ?, ?)"
+                (list file new-hash (floor (float-time))))
+              (sqlite-execute db "COMMIT"))
+          (error
+           (sqlite-execute db "ROLLBACK")
+           (signal (car err) (cdr err)))))
+      t)))
+
 (defun org-roam-semantic--db-get-embeddings (&optional chunk-type)
   "Return list of (node-id chunk-type embedding-vector) triples from the DB.
 If CHUNK-TYPE is non-nil ('leading' or 'full'), filter to that type only."
