@@ -242,6 +242,21 @@ If CUTOFF is provided, filters results to only include similarities above that t
 
 ;;; Chunking Functions
 
+(defun org-roam-semantic--normalize-headline-text (headline)
+  "Return clean title text from org-element HEADLINE node.
+TODO keywords, priority cookies, and tags are separate org-element properties
+and are never part of :title, so only timestamps need explicit removal."
+  (let* ((title (org-element-property :title headline))
+         (no-timestamps (cl-remove-if
+                         (lambda (elt)
+                           (and (listp elt)
+                                (eq (org-element-type elt) 'timestamp)))
+                         title))
+         (text (string-trim
+                (substring-no-properties
+                 (org-element-interpret-data no-timestamps)))))
+    text))
+
 (defun org-roam-semantic--count-words (text)
   "Count words in TEXT."
   (length (split-string (org-roam-semantic--normalize-text text) "\\s-+" t)))
