@@ -366,6 +366,28 @@ and are never part of :title, so only timestamps need explicit removal."
   "Count words in TEXT."
   (length (split-string (org-roam-semantic--normalize-text text) "\\s-+" t)))
 
+(defun org-roam-semantic--enforce-chunk-size (text node-id chunk-type)
+  "Enforce word-count limits on TEXT for NODE-ID's CHUNK-TYPE chunk.
+Returns nil if TEXT is below `org-roam-semantic-min-chunk-size', logging a
+warning.  Returns TEXT truncated to `org-roam-semantic-max-chunk-size' words
+if it exceeds the maximum, logging a warning.  Otherwise returns TEXT as-is."
+  (let ((word-count (org-roam-semantic--count-words text)))
+    (cond
+     ((< word-count org-roam-semantic-min-chunk-size)
+      (org-roam-semantic--log-error
+       "Skipping %s chunk for %s: %d words below minimum %d"
+       chunk-type node-id word-count org-roam-semantic-min-chunk-size)
+      nil)
+     ((> word-count org-roam-semantic-max-chunk-size)
+      (org-roam-semantic--log-error
+       "Truncating %s chunk for %s: %d words exceeds maximum %d"
+       chunk-type node-id word-count org-roam-semantic-max-chunk-size)
+      (mapconcat #'identity
+                 (seq-take (split-string text "\\s-+" t)
+                           org-roam-semantic-max-chunk-size)
+                 " "))
+     (t text))))
+
 (defun org-roam-semantic--generate-chunk-id ()
   "Generate a unique ID for a chunk."
   (org-id-new))
@@ -926,6 +948,56 @@ separate from the async pipeline used for indexing."
   "Deserialize BLOB (space-separated text or bytes) to a list of floats."
   (let ((str (if (stringp blob) blob (decode-coding-string blob 'utf-8))))
     (mapcar #'string-to-number (split-string (string-trim str) " " t))))
+
+(defun org-roam-semantic--file-content-hash (file)
+  "Return a SHA256 hex hash of FILE's normalized semantic content.
+Strips TODO keywords, priority cookies, tags, property drawers,
+planning lines, timestamps, and file-level #+keyword: lines (except
+#+title:) before hashing.  Used to detect meaningful content changes
+while ignoring organizational edits (tag changes, rescheduling)."
+  (with-temp-buffer
+    (insert-file-contents file)
+    ;; Remove :PROPERTIES:...:END: drawers
+    (goto-char (point-min))
+    (while (re-search-forward
+            "^[ \t]*:PROPERTIES:[ \t]*\n\\(?:.*\n\\)*?[ \t]*:END:[ \t]*\n?" nil t)
+      (replace-match ""))
+    ;; Remove planning lines
+    (goto-char (point-min))
+    (while (re-search-forward
+            "^[ \t]*\\(?:SCHEDULED\\|DEADLINE\\|CLOSED\\):.*\n?" nil t)
+      (replace-match ""))
+    ;; Remove #+keyword: lines except #+title:
+    (goto-char (point-min))
+    (while (re-search-forward "^#\\+\\(?!title:\\)[a-zA-Z_-]+:.*\n?" nil t)
+      (replace-match ""))
+    ;; Strip TODO keywords from headlines
+    (goto-char (point-min))
+    (while (re-search-forward
+            "^\\(\\*+[ \t]+\\)\\(?:TODO\\|DONE\\|NEXT\\|WAITING\\|HOLD\\|CANCELLED\\|SOMEDAY\\)[ \t]+"
+            nil t)
+      (replace-match "\\1"))
+    ;; Strip priority cookies from headlines
+    (goto-char (point-min))
+    (while (re-search-forward "^\\(\\*+.*?\\)\\[#[A-Z]\\][ \t]+" nil t)
+      (replace-match "\\1"))
+    ;; Strip tags from end of headlines
+    (goto-char (point-min))
+    (while (re-search-forward "[ \t]+:[a-zA-Z0-9_@#%:]+:[ \t]*$" nil t)
+      (replace-match ""))
+    ;; Strip active and inactive timestamps
+    (goto-char (point-min))
+    (while (re-search-forward
+            "<[0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}[^>\n]*>" nil t)
+      (replace-match ""))
+    (goto-char (point-min))
+    (while (re-search-forward
+            "\\[[0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}[^]\n]*\\]" nil t)
+      (replace-match ""))
+    ;; Normalize whitespace and hash
+    (secure-hash 'sha256
+                 (string-trim
+                  (replace-regexp-in-string "[ \t\n\r]+" " " (buffer-string))))))
 
 (defun org-roam-semantic--db-get-embeddings (&optional chunk-type)
   "Return list of (node-id chunk-type embedding-vector) triples from the DB.
