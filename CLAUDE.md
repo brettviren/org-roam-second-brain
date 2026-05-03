@@ -93,6 +93,45 @@ subdirectory and re-run `M-x org-roam-db-sync`. Each node needs a file-level
 `:ID:` property; use `test-<type>-<slug>-NNNN` as the ID format to avoid
 collisions with real notes.
 
+### Batch Testing
+
+Use `emacs --batch` to run non-interactive tests against the already-cached
+straight.el packages in `test/straight/`.
+
+**Key rules:**
+
+1. **`--load test/init.el` does not auto-load packages.** `use-package :after`
+   deferral does not fire in batch mode. Always explicitly require what you need:
+   ```bash
+   emacs --init-directory=test --batch \
+     --load test/init.el \
+     --eval "(require 'org-roam) (require 'org-roam-vector-search)" \
+     --eval "..."
+   ```
+
+2. **Use separate `--eval` flags for separate expressions**, not one large
+   single-quoted string. Long `--eval` strings are hard to debug and shell
+   quoting errors are silent.
+
+3. **Test scripts must be pure ASCII.** Non-ASCII characters (em-dashes, box
+   drawing, curly quotes) in `.el` script files cause `end-of-file during
+   parsing` errors in `--batch` mode. Write scripts with a heredoc and verify:
+   ```bash
+   python3 -c "
+   data = open('test/myscript.el','rb').read()
+   print('non-ASCII:', len([b for b in data if b>127]))
+   "
+   ```
+
+4. **The async embedding queue does not drain in batch mode.** `url-retrieve`
+   callbacks require the Emacs event loop. For batch tests, use the synchronous
+   path (`org-roam-semantic--embed-query-sync`) and call
+   `org-roam-semantic--db-upsert-embedding` directly. See
+   `test/test-embeddings.el` for a working example.
+
+5. **`message` output goes to stderr.** Pipe through `grep` or `2>&1` to
+   capture it alongside stdout.
+
 ## Architecture Overview
 
 This package (`org-roam-vector-search.el`) adds vector embedding support and semantic
