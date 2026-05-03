@@ -104,6 +104,15 @@ Higher values (closer to 1.0) mean more similar notes only."
   :type 'float
   :group 'org-roam-vector-search)
 
+(defcustom org-roam-semantic-clean-old-properties nil
+  "When non-nil, strip legacy EMBEDDING properties from org files during processing.
+This is a transition aid for users migrating from property-based embedding
+storage to the SQLite backend.  When nil, old EMBEDDING properties are silently
+ignored.  When t, any EMBEDDING property found in a file being processed is
+deleted from that file."
+  :type 'boolean
+  :group 'org-roam-vector-search)
+
 ;;; Utility Functions
 
 (defun org-roam-semantic-get-similar-data (query-text &optional limit cutoff)
@@ -512,6 +521,18 @@ Returns list of (position heading-text embedding) tuples."
   "Check if note already has chunk embeddings."
   (not (null (org-roam-semantic--get-all-embeddings file))))
 
+(defun org-roam-semantic--remove-embedding-properties (file)
+  "Delete all :EMBEDDING: properties from FILE when `org-roam-semantic-clean-old-properties' is t."
+  (when org-roam-semantic-clean-old-properties
+    (with-current-buffer (find-file-noselect file)
+      (require 'org)
+      (save-excursion
+        (org-with-wide-buffer
+          (goto-char (point-min))
+          (while (re-search-forward "^[ \t]*:EMBEDDING:[ \t]*.*\n?" nil t)
+            (replace-match "")
+            (set-buffer-modified-p t)))))))
+
 ;;; Main Embedding Functions
 
 (defun org-roam-semantic--generate-embedding (text)
@@ -532,6 +553,7 @@ Returns list of (position heading-text embedding) tuples."
   (interactive (list (buffer-file-name)))
   (unless file
     (error "No file associated with current buffer"))
+  (org-roam-semantic--remove-embedding-properties file)
   (let* ((chunks (org-roam-semantic--parse-chunks file))
          (total (length chunks))
          (processed 0)
