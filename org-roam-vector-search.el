@@ -282,6 +282,71 @@ and nil ancestors. Headline entries carry their ancestor chain for breadcrumbs."
                   nodes))))
       (nreverse nodes))))
 
+(defun org-roam-semantic--file-title (tree)
+  "Return the #+title: string from parse TREE, or nil if absent."
+  (org-element-map tree 'keyword
+    (lambda (kw)
+      (when (string= (org-element-property :key kw) "TITLE")
+        (string-trim (org-element-property :value kw))))
+    nil t))
+
+(defun org-roam-semantic--node-body-text (element)
+  "Return pre-child body text of ELEMENT (headline or org-data), or nil.
+Excludes property drawers, planning lines, keyword lines, and clock entries."
+  (let* ((first-child (car (org-element-contents element)))
+         (section (when (eq (org-element-type first-child) 'section)
+                    first-child)))
+    (when section
+      (let* ((body-elements
+              (cl-remove-if
+               (lambda (elt)
+                 (memq (org-element-type elt)
+                       '(property-drawer planning keyword comment clock)))
+               (org-element-contents section)))
+             (text (string-trim
+                    (substring-no-properties
+                     (mapconcat #'org-element-interpret-data body-elements "")))))
+        (when (not (string-empty-p text)) text)))))
+
+(defun org-roam-semantic--build-leading-chunk (node-entry file-title)
+  "Return 'leading' chunk text for NODE-ENTRY.
+NODE-ENTRY is a (element position level ancestors) list from
+`org-roam-semantic--discover-nodes'. FILE-TITLE is the #+title: string or nil.
+Format: 'FileTitle. AncestorTitle. NodeTitle. [pre-child body text]'"
+  (let* ((element (nth 0 node-entry))
+         (ancestors (nth 3 node-entry))
+         (is-file-level (eq (org-element-type element) 'org-data))
+         (breadcrumb-parts
+          (append
+           (when file-title (list file-title))
+           (mapcar #'org-roam-semantic--normalize-headline-text ancestors)
+           (unless is-file-level
+             (list (org-roam-semantic--normalize-headline-text element)))))
+         (breadcrumb (mapconcat (lambda (s) (concat s ". ")) breadcrumb-parts ""))
+         (body (org-roam-semantic--node-body-text element)))
+    (string-trim (if body (concat breadcrumb body) breadcrumb))))
+
+(defun org-roam-semantic--build-full-chunk (node-entry file-title)
+  "Return 'full' chunk text for NODE-ENTRY.
+NODE-ENTRY is a (element position level ancestors) list from
+`org-roam-semantic--discover-nodes'. FILE-TITLE is the #+title: string or nil.
+Equals the leading chunk plus all descendant headline titles and their bodies."
+  (let* ((element (nth 0 node-entry))
+         (leading (org-roam-semantic--build-leading-chunk node-entry file-title))
+         (descendant-parts
+          (org-element-map (org-element-contents element) 'headline
+            (lambda (hl)
+              (let* ((title (org-roam-semantic--normalize-headline-text hl))
+                     (body (org-roam-semantic--node-body-text hl)))
+                (if (and body (not (string-empty-p body)))
+                    (concat title ". " body)
+                  (concat title "."))))))
+         (descendant-text (mapconcat #'identity descendant-parts " ")))
+    (string-trim
+     (if (string-empty-p descendant-text)
+         leading
+       (concat leading " " descendant-text)))))
+
 (defun org-roam-semantic--normalize-headline-text (headline)
   "Return clean title text from org-element HEADLINE node.
 TODO keywords, priority cookies, and tags are separate org-element properties
