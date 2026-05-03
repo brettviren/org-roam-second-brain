@@ -113,6 +113,25 @@ deleted from that file."
   :type 'boolean
   :group 'org-roam-vector-search)
 
+(defcustom org-roam-semantic-result-limit 10
+  "Default maximum number of results returned by semantic search functions."
+  :type 'integer
+  :group 'org-roam-vector-search)
+
+(defcustom org-roam-semantic-db-location nil
+  "Path to the embeddings SQLite database.
+When nil, defaults to org-roam-embeddings.db in the same directory as
+`org-roam-db-location'."
+  :type '(choice (const :tag "Default" nil) file)
+  :group 'org-roam-vector-search)
+
+(defcustom org-roam-semantic-sqlite-vec-path nil
+  "Path to the sqlite-vec extension shared library, or nil to skip loading it.
+When set, the extension is loaded on DB open; if loading fails, the system
+falls back to TEXT storage silently."
+  :type '(choice (const :tag "Disabled" nil) file)
+  :group 'org-roam-vector-search)
+
 ;;; Utility Functions
 
 (defun org-roam-semantic-get-similar-data (query-text &optional limit cutoff)
@@ -669,6 +688,203 @@ separate from the async pipeline used for indexing."
 
     (message "Chunk embedding generation complete: %d files processed, %d chunks total, %d processed, %d skipped"
              total-files total-chunks processed-chunks skipped-chunks)))
+
+;;; Error Reporting
+
+(defun org-roam-semantic--log-error (format-string &rest args)
+  "Append a timestamped message to *org-roam-semantic-errors* without switching to it."
+  (with-current-buffer (get-buffer-create "*org-roam-semantic-errors*")
+    (goto-char (point-max))
+    (insert (format-time-string "[%Y-%m-%d %H:%M:%S] ")
+            (apply #'format format-string args)
+            "\n")))
+
+;;;###autoload
+(defun org-roam-semantic-show-errors ()
+  "Display the *org-roam-semantic-errors* buffer."
+  (interactive)
+  (display-buffer (get-buffer-create "*org-roam-semantic-errors*")))
+
+;;; SQLite Database
+
+(defvar org-roam-semantic--db-connection nil
+  "Singleton SQLite connection to the embeddings database.")
+
+(defvar org-roam-semantic--vec-extension-loaded nil
+  "Non-nil when the sqlite-vec extension was successfully loaded.")
+
+(defun org-roam-semantic--db-location ()
+  "Return the effective path to the embeddings database file."
+  (or org-roam-semantic-db-location
+      (file-name-concat (file-name-directory org-roam-db-location)
+                        "org-roam-embeddings.db")))
+
+(defun org-roam-semantic--db-open ()
+  "Return the open DB connection, opening and initializing it if needed."
+  (unless org-roam-semantic--db-connection
+    (let ((db (sqlite-open (org-roam-semantic--db-location))))
+      (sqlite-execute db "CREATE TABLE IF NOT EXISTS file_hashes (
+        file TEXT PRIMARY KEY NOT NULL,
+        content_hash TEXT NOT NULL,
+        updated_at INTEGER NOT NULL)")
+      (sqlite-execute db "CREATE TABLE IF NOT EXISTS embeddings (
+        node_id TEXT NOT NULL,
+        chunk_type TEXT NOT NULL,
+        embedding BLOB NOT NULL,
+        PRIMARY KEY (node_id, chunk_type))")
+      (when org-roam-semantic-sqlite-vec-path
+        (condition-case err
+            (progn
+              (sqlite-execute db (format "SELECT load_extension('%s')"
+                                        org-roam-semantic-sqlite-vec-path))
+              (setq org-roam-semantic--vec-extension-loaded t))
+          (error
+           (org-roam-semantic--log-error "sqlite-vec load failed: %s" err)
+           (setq org-roam-semantic--vec-extension-loaded nil))))
+      (setq org-roam-semantic--db-connection db)))
+  org-roam-semantic--db-connection)
+
+(defun org-roam-semantic--db-close ()
+  "Close the embeddings database connection."
+  (when org-roam-semantic--db-connection
+    (sqlite-close org-roam-semantic--db-connection)
+    (setq org-roam-semantic--db-connection nil)))
+
+(defun org-roam-semantic--vec-serialize (vec)
+  "Serialize VEC (list of floats) to space-separated string for storage."
+  (mapconcat (lambda (x) (format "%.8f" x)) vec " "))
+
+(defun org-roam-semantic--vec-deserialize (blob)
+  "Deserialize BLOB (space-separated text or bytes) to a list of floats."
+  (let ((str (if (stringp blob) blob (decode-coding-string blob 'utf-8))))
+    (mapcar #'string-to-number (split-string (string-trim str) " " t))))
+
+(defun org-roam-semantic--db-get-embeddings (&optional chunk-type)
+  "Return list of (node-id chunk-type embedding-vector) triples from the DB.
+If CHUNK-TYPE is non-nil ('leading' or 'full'), filter to that type only."
+  (let* ((db (org-roam-semantic--db-open))
+         (rows (if chunk-type
+                   (sqlite-select db
+                     "SELECT node_id, chunk_type, embedding FROM embeddings WHERE chunk_type = ?"
+                     (list chunk-type))
+                 (sqlite-select db
+                   "SELECT node_id, chunk_type, embedding FROM embeddings"))))
+    (mapcar (lambda (row)
+              (list (nth 0 row)
+                    (nth 1 row)
+                    (org-roam-semantic--vec-deserialize (nth 2 row))))
+            rows)))
+
+(defun org-roam-semantic--db-get-node-metadata (node-id)
+  "Return (file-path heading-text) for NODE-ID by querying org-roam's DB."
+  (let ((rows (org-roam-db-query
+               [:select [file title] :from nodes :where (= id $s1)]
+               node-id)))
+    (when rows
+      (list (car (car rows)) (cadr (car rows))))))
+
+;;; Semantic Search
+
+(defun org-roam-semantic--find-by-chunk-type (query-vec chunk-types limit cutoff)
+  "Search CHUNK-TYPES embeddings for QUERY-VEC, return top LIMIT above CUTOFF.
+CHUNK-TYPES is a list of strings (e.g. '(\"leading\" \"full\")).
+Returns list of (node-id similarity file-path heading-text)."
+  (let ((best (make-hash-table :test 'equal)))
+    (dolist (chunk-type chunk-types)
+      (dolist (row (org-roam-semantic--db-get-embeddings chunk-type))
+        (let* ((node-id (nth 0 row))
+               (embedding (nth 2 row))
+               (sim (org-roam-semantic--cosine-similarity query-vec embedding)))
+          (when (and sim (>= sim cutoff))
+            (let ((prev (gethash node-id best)))
+              (when (or (null prev) (> sim prev))
+                (puthash node-id sim best)))))))
+    (let (pairs)
+      (maphash (lambda (node-id sim) (push (cons node-id sim) pairs)) best)
+      (setq pairs (sort pairs (lambda (a b) (> (cdr a) (cdr b)))))
+      (when (> (length pairs) limit)
+        (setq pairs (seq-take pairs limit)))
+      (delq nil
+            (mapcar (lambda (pair)
+                      (let* ((node-id (car pair))
+                             (sim (cdr pair))
+                             (meta (org-roam-semantic--db-get-node-metadata node-id)))
+                        (when meta
+                          (list node-id sim (nth 0 meta) (nth 1 meta)))))
+                    pairs)))))
+
+(defun org-roam-semantic--display-results (query-text results)
+  "Display RESULTS for QUERY-TEXT in the *Similar Notes* buffer."
+  (with-current-buffer (get-buffer-create "*Similar Notes*")
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (org-mode)
+      (insert (format "* Similar notes for: %s\n\n" query-text))
+      (if results
+          (dolist (r results)
+            (let ((node-id (nth 0 r))
+                  (sim (nth 1 r))
+                  (heading (nth 3 r)))
+              (insert (format "- %.3f [[id:%s][%s]]\n"
+                              sim node-id (or heading node-id)))))
+        (insert "No results above the similarity cutoff.\n"))
+      (goto-char (point-min)))
+    (display-buffer (current-buffer))))
+
+;;;###autoload
+(defun org-roam-semantic-find-best (query-text &optional limit cutoff)
+  "Find org-roam nodes semantically similar to QUERY-TEXT, both chunk types.
+Deduplicates by node-id, keeping the highest cosine score across chunk types.
+LIMIT defaults to `org-roam-semantic-result-limit'.
+CUTOFF defaults to `org-roam-semantic-similarity-cutoff'.
+Returns list of (node-id similarity file-path heading-text) and displays
+results in *Similar Notes* buffer with clickable org-id links."
+  (interactive "sSearch query: ")
+  (let* ((limit (or limit org-roam-semantic-result-limit))
+         (cutoff (or cutoff org-roam-semantic-similarity-cutoff))
+         (query-vec (org-roam-semantic--embed-query-sync query-text)))
+    (if (null query-vec)
+        (progn (org-roam-semantic--log-error "Failed to embed query: %s" query-text) nil)
+      (let ((results (org-roam-semantic--find-by-chunk-type
+                      query-vec '("leading" "full") limit cutoff)))
+        (org-roam-semantic--display-results query-text results)
+        results))))
+
+;;;###autoload
+(defun org-roam-semantic-find-best-full (query-text &optional limit cutoff)
+  "Find org-roam nodes similar to QUERY-TEXT using full-content embeddings only.
+LIMIT defaults to `org-roam-semantic-result-limit'.
+CUTOFF defaults to `org-roam-semantic-similarity-cutoff'.
+Returns list of (node-id similarity file-path heading-text) and displays
+results in *Similar Notes* buffer with clickable org-id links."
+  (interactive "sSearch query: ")
+  (let* ((limit (or limit org-roam-semantic-result-limit))
+         (cutoff (or cutoff org-roam-semantic-similarity-cutoff))
+         (query-vec (org-roam-semantic--embed-query-sync query-text)))
+    (if (null query-vec)
+        (progn (org-roam-semantic--log-error "Failed to embed query: %s" query-text) nil)
+      (let ((results (org-roam-semantic--find-by-chunk-type
+                      query-vec '("full") limit cutoff)))
+        (org-roam-semantic--display-results query-text results)
+        results))))
+
+;;;###autoload
+(defun org-roam-semantic-find-best-leading (query-text &optional limit cutoff)
+  "Find org-roam nodes similar to QUERY-TEXT using leading-text embeddings only.
+LIMIT defaults to `org-roam-semantic-result-limit'.
+CUTOFF defaults to `org-roam-semantic-similarity-cutoff'.
+Returns list of (node-id similarity file-path heading-text) and displays
+results in *Similar Notes* buffer with clickable org-id links."
+  (interactive "sSearch query: ")
+  (let* ((limit (or limit org-roam-semantic-result-limit))
+         (cutoff (or cutoff org-roam-semantic-similarity-cutoff))
+         (query-vec (org-roam-semantic--embed-query-sync query-text)))
+    (if (null query-vec)
+        (progn (org-roam-semantic--log-error "Failed to embed query: %s" query-text) nil)
+      (let ((results (org-roam-semantic--find-by-chunk-type
+                      query-vec '("leading") limit cutoff)))
+        (org-roam-semantic--display-results query-text results)
+        results))))
 
 ;;; Vector Search Functions
 
