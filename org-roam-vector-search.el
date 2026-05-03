@@ -242,6 +242,46 @@ If CUTOFF is provided, filters results to only include similarities above that t
 
 ;;; Chunking Functions
 
+(defun org-roam-semantic--headline-ancestors (headline)
+  "Return ancestor headline elements of HEADLINE, outermost first."
+  (let ((ancestors '())
+        (parent (org-element-property :parent headline)))
+    (while parent
+      (when (eq (org-element-type parent) 'headline)
+        (push parent ancestors))
+      (setq parent (org-element-property :parent parent)))
+    ancestors))
+
+(defun org-roam-semantic--discover-nodes (file)
+  "Return all org-roam nodes in FILE as list of (element position level ancestors).
+Nodes are org-roam headings (with :ID: property) plus the file itself if it
+has a top-level :ID: before the first heading. File-level entries have level 0
+and nil ancestors. Headline entries carry their ancestor chain for breadcrumbs."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (delay-mode-hooks (org-mode))
+    (let* ((tree (org-element-parse-buffer))
+           (nodes '()))
+      ;; File-level node: :ID: in the section before the first headline.
+      ;; no-recursion='headline ensures we only look in the preamble section.
+      (let ((file-id (org-element-map tree 'node-property
+                       (lambda (np)
+                         (when (string= (org-element-property :key np) "ID")
+                           (org-element-property :value np)))
+                       nil t 'headline)))
+        (when file-id
+          (push (list tree 1 0 nil) nodes)))
+      ;; Headline nodes at any depth
+      (org-element-map tree 'headline
+        (lambda (hl)
+          (when (org-element-property :ID hl)
+            (push (list hl
+                        (org-element-property :begin hl)
+                        (org-element-property :level hl)
+                        (org-roam-semantic--headline-ancestors hl))
+                  nodes))))
+      (nreverse nodes))))
+
 (defun org-roam-semantic--normalize-headline-text (headline)
   "Return clean title text from org-element HEADLINE node.
 TODO keywords, priority cookies, and tags are separate org-element properties
