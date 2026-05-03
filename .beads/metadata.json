@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "org_roam_second_brain",
+  "project_id": "4bcc26cd-1f32-4832-8c2f-e98a32675c89"
+}
