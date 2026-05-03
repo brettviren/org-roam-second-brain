@@ -941,6 +941,49 @@ separate from the async pipeline used for indexing."
     (message "Chunk embedding generation complete: %d files processed, %d chunks total, %d processed, %d skipped"
              total-files total-chunks processed-chunks skipped-chunks)))
 
+;;; Sync Commands
+
+;;;###autoload
+(defun org-roam-semantic-sync-file (&optional file)
+  "Reindex FILE through the async embedding pipeline.
+Invalidates stale embeddings if the content hash changed, then discovers
+all :ID: nodes, builds both chunk types, and queues them for async
+embedding.  Reports the number of nodes queued in the minibuffer.
+FILE defaults to the current buffer's file."
+  (interactive)
+  (let* ((file (or file (buffer-file-name)))
+         (_ (unless file (error "No file associated with current buffer")))
+         (file (expand-file-name file))
+         (file-title (org-roam-semantic--get-title file))
+         (nodes (org-roam-semantic--discover-nodes file))
+         (queued 0))
+    (org-roam-semantic--invalidate-file-if-changed file)
+    (dolist (node-entry nodes)
+      (let* ((element (nth 0 node-entry))
+             (level (nth 2 node-entry))
+             (node-id (if (> level 0)
+                          (org-element-property :ID element)
+                        (org-element-map element 'node-property
+                          (lambda (np)
+                            (when (string= (org-element-property :key np) "ID")
+                              (org-element-property :value np)))
+                          nil t 'headline)))
+             (leading (when node-id
+                        (org-roam-semantic--enforce-chunk-size
+                         (org-roam-semantic--build-leading-chunk node-entry file-title)
+                         node-id "leading")))
+             (full (when node-id
+                     (org-roam-semantic--enforce-chunk-size
+                      (org-roam-semantic--build-full-chunk node-entry file-title)
+                      node-id "full"))))
+        (when (and node-id (or leading full))
+          (when leading (org-roam-semantic--embed-enqueue node-id "leading" leading))
+          (when full (org-roam-semantic--embed-enqueue node-id "full" full))
+          (cl-incf queued))))
+    (message "org-roam-semantic: queued %d node%s for %s"
+             queued (if (= queued 1) "" "s")
+             (file-name-nondirectory file))))
+
 ;;; Error Reporting
 
 (defun org-roam-semantic--log-error (format-string &rest args)
