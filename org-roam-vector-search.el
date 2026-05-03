@@ -484,14 +484,42 @@ Returns list of (position heading-text content word-count level)."
 
 ;;; OpenAI-Compatible API Functions
 
+(defun org-roam-semantic--parse-embedding-openai (data)
+  "Extract a float list from an OpenAI-format embedding response DATA.
+Expected shape: {\"data\": [{\"embedding\": [...]}]}"
+  (let* ((arr   (cdr (assoc 'data data)))
+         (first (if (vectorp arr) (aref arr 0) (car arr)))
+         (emb   (cdr (assoc 'embedding first))))
+    (when emb
+      (if (vectorp emb) (append emb nil) emb))))
+
+(defun org-roam-semantic--parse-embedding-llamacpp (data)
+  "Extract a float list from a llama.cpp-format embedding response DATA.
+Expected shape: [{\"index\": 0, \"embedding\": [[...]]}]
+The top level is an array; the embedding value is itself a 1-element array
+wrapping the float vector."
+  (let* ((first (if (vectorp data) (aref data 0) (car data)))
+         (outer (cdr (assoc 'embedding first)))
+         (emb   (if (vectorp outer) (aref outer 0) (car outer))))
+    (when emb
+      (if (vectorp emb) (append emb nil) emb))))
+
+(defun org-roam-semantic--parse-embedding-response (data)
+  "Extract a float list from embedding API response DATA.
+Dispatches to the correct parser by inspecting the top-level JSON type:
+a vector indicates llama.cpp native format; an alist indicates OpenAI format."
+  (if (vectorp data)
+      (org-roam-semantic--parse-embedding-llamacpp data)
+    (org-roam-semantic--parse-embedding-openai data)))
+
 (defun org-roam-ai-generate-embedding (text)
-  "Call OpenAI-compatible embeddings API synchronously.
-Works with Infinity, vLLM, and other OpenAI-compatible embedding services."
+  "Call the embeddings API synchronously and return a float list.
+Handles both OpenAI-compatible and llama.cpp native response formats."
   (let ((url-request-method "POST")
         (url-request-extra-headers '(("Content-Type" . "application/json")))
         (url-request-data (encode-coding-string
                            (json-encode `((model . ,org-roam-semantic-embedding-model)
-                                        (input . ,text)))
+                                         (input . ,text)))
                            'utf-8))
         (url (concat org-roam-semantic-embedding-url "/embeddings")))
     (condition-case err
@@ -499,17 +527,11 @@ Works with Infinity, vLLM, and other OpenAI-compatible embedding services."
           (goto-char (point-min))
           (re-search-forward "^$" nil 'move)
           (let* ((json-response (decode-coding-string
-                                (buffer-substring (point) (point-max)) 'utf-8))
+                                 (buffer-substring (point) (point-max)) 'utf-8))
                  (data (json-read-from-string json-response))
-                 ;; OpenAI format: {"data": [{"embedding": [...]}]}
-                 (data-array (cdr (assoc 'data data)))
-                 (first-result (if (vectorp data-array) (aref data-array 0) (car data-array)))
-                 (embedding (cdr (assoc 'embedding first-result))))
+                 (embedding (org-roam-semantic--parse-embedding-response data)))
             (kill-buffer (current-buffer))
-            ;; Convert vector to list if necessary
-            (if (vectorp embedding)
-                (append embedding nil)
-              embedding)))
+            embedding))
       (error
        (message "Error calling embeddings API: %s" err)
        nil))))
@@ -798,15 +820,9 @@ STATUS is the plist from url-retrieve; current buffer is the response buffer."
             (let* ((json-response (decode-coding-string
                                    (buffer-substring (point) (point-max)) 'utf-8))
                    (data (json-read-from-string json-response))
-                   (data-array (cdr (assoc 'data data)))
-                   (first-result (if (vectorp data-array)
-                                     (aref data-array 0)
-                                   (car data-array)))
-                   (embedding (cdr (assoc 'embedding first-result))))
+                   (embedding (org-roam-semantic--parse-embedding-response data)))
               (when embedding
-                (org-roam-semantic--db-upsert-embedding
-                 node-id chunk-type
-                 (if (vectorp embedding) (append embedding nil) embedding)))))
+                (org-roam-semantic--db-upsert-embedding node-id chunk-type embedding))))
         (error
          (org-roam-semantic--log-error "Async embed failed for %s/%s: %s"
                                         node-id chunk-type err)))
