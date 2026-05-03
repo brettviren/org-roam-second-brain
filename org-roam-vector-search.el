@@ -744,6 +744,68 @@ property entries were cleaned."
 
 ;;; Main Embedding Functions
 
+(defvar org-roam-semantic--embed-queue nil
+  "Queue of (node-id chunk-type text) triples pending async embedding generation.")
+
+(defvar org-roam-semantic--embed-running nil
+  "Non-nil while an async embedding HTTP request is in-flight.")
+
+(defun org-roam-semantic--embed-enqueue (node-id chunk-type text)
+  "Append (NODE-ID CHUNK-TYPE TEXT) to the queue and drain if idle."
+  (setq org-roam-semantic--embed-queue
+        (nconc org-roam-semantic--embed-queue (list (list node-id chunk-type text))))
+  (org-roam-semantic--embed-drain))
+
+(defun org-roam-semantic--embed-drain ()
+  "Start processing the next queued item if no request is in-flight."
+  (when (and org-roam-semantic--embed-queue
+             (not org-roam-semantic--embed-running))
+    (let* ((item (pop org-roam-semantic--embed-queue))
+           (node-id (nth 0 item))
+           (chunk-type (nth 1 item))
+           (text (nth 2 item))
+           (url-request-method "POST")
+           (url-request-extra-headers '(("Content-Type" . "application/json")))
+           (url-request-data (encode-coding-string
+                              (json-encode `((model . ,org-roam-semantic-embedding-model)
+                                             (input . ,text)))
+                              'utf-8))
+           (url (concat org-roam-semantic-embedding-url "/embeddings")))
+      (setq org-roam-semantic--embed-running t)
+      (url-retrieve url
+                    (lambda (status)
+                      (org-roam-semantic--embed-callback status node-id chunk-type))
+                    nil 'silent))))
+
+(defun org-roam-semantic--embed-callback (status node-id chunk-type)
+  "Handle HTTP response for NODE-ID / CHUNK-TYPE.
+STATUS is the plist from url-retrieve; current buffer is the response buffer."
+  (unwind-protect
+      (condition-case err
+          (progn
+            (when (plist-get status :error)
+              (error "HTTP error: %s" (plist-get status :error)))
+            (goto-char (point-min))
+            (re-search-forward "^$" nil 'move)
+            (let* ((json-response (decode-coding-string
+                                   (buffer-substring (point) (point-max)) 'utf-8))
+                   (data (json-read-from-string json-response))
+                   (data-array (cdr (assoc 'data data)))
+                   (first-result (if (vectorp data-array)
+                                     (aref data-array 0)
+                                   (car data-array)))
+                   (embedding (cdr (assoc 'embedding first-result))))
+              (when embedding
+                (org-roam-semantic--db-upsert-embedding
+                 node-id chunk-type
+                 (if (vectorp embedding) (append embedding nil) embedding)))))
+        (error
+         (org-roam-semantic--log-error "Async embed failed for %s/%s: %s"
+                                        node-id chunk-type err)))
+    (kill-buffer (current-buffer))
+    (setq org-roam-semantic--embed-running nil)
+    (org-roam-semantic--embed-drain)))
+
 (defun org-roam-semantic--embed-query-sync (query-text)
   "Generate embedding for QUERY-TEXT synchronously.
 Uses url-retrieve-synchronously; appropriate for interactive search queries
@@ -939,6 +1001,13 @@ separate from the async pipeline used for indexing."
   (when org-roam-semantic--db-connection
     (sqlite-close org-roam-semantic--db-connection)
     (setq org-roam-semantic--db-connection nil)))
+
+(defun org-roam-semantic--db-upsert-embedding (node-id chunk-type vector)
+  "Store or replace VECTOR for NODE-ID / CHUNK-TYPE in the embeddings table."
+  (let ((db (org-roam-semantic--db-open)))
+    (sqlite-execute db
+      "INSERT OR REPLACE INTO embeddings (node_id, chunk_type, embedding) VALUES (?, ?, ?)"
+      (list node-id chunk-type (org-roam-semantic--vec-serialize vector)))))
 
 (defun org-roam-semantic--vec-serialize (vec)
   "Serialize VEC (list of floats) to space-separated string for storage."
