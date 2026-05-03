@@ -984,6 +984,59 @@ FILE defaults to the current buffer's file."
              queued (if (= queued 1) "" "s")
              (file-name-nondirectory file))))
 
+;;;###autoload
+(defun org-roam-semantic-sync-all ()
+  "Reindex all org-roam files through the async embedding pipeline.
+For each file, invalidates stale embeddings if the content hash changed,
+then queues nodes whose embeddings are missing or whose file changed.
+Unchanged files with complete embeddings are skipped.  Reports aggregate
+progress in the minibuffer."
+  (interactive)
+  (let* ((files (org-roam-list-files))
+         (total (length files))
+         (db (org-roam-semantic--db-open))
+         (embedded-ids (make-hash-table :test 'equal))
+         (queued-files 0)
+         (queued-nodes 0))
+    (dolist (row (sqlite-select db "SELECT DISTINCT node_id FROM embeddings"))
+      (puthash (car row) t embedded-ids))
+    (let ((i 0))
+      (dolist (file files)
+        (cl-incf i)
+        (message "org-roam-semantic: scanning %d/%d %s" i total
+                 (file-name-nondirectory file))
+        (let* ((changed (org-roam-semantic--invalidate-file-if-changed file))
+               (file-title (org-roam-semantic--get-title file))
+               (nodes (org-roam-semantic--discover-nodes file))
+               (file-queued 0))
+          (dolist (node-entry nodes)
+            (let* ((element (nth 0 node-entry))
+                   (level (nth 2 node-entry))
+                   (node-id (if (> level 0)
+                                (org-element-property :ID element)
+                              (org-element-map element 'node-property
+                                (lambda (np)
+                                  (when (string= (org-element-property :key np) "ID")
+                                    (org-element-property :value np)))
+                                nil t 'headline))))
+              (when (and node-id (or changed (not (gethash node-id embedded-ids))))
+                (let* ((leading (org-roam-semantic--enforce-chunk-size
+                                 (org-roam-semantic--build-leading-chunk node-entry file-title)
+                                 node-id "leading"))
+                       (full (org-roam-semantic--enforce-chunk-size
+                              (org-roam-semantic--build-full-chunk node-entry file-title)
+                              node-id "full")))
+                  (when (or leading full)
+                    (when leading (org-roam-semantic--embed-enqueue node-id "leading" leading))
+                    (when full (org-roam-semantic--embed-enqueue node-id "full" full))
+                    (cl-incf file-queued))))))
+          (when (> file-queued 0)
+            (cl-incf queued-files))
+          (cl-incf queued-nodes file-queued))))
+    (message "org-roam-semantic: queued %d node%s across %d file%s"
+             queued-nodes (if (= queued-nodes 1) "" "s")
+             queued-files (if (= queued-files 1) "" "s"))))
+
 ;;; Error Reporting
 
 (defun org-roam-semantic--log-error (format-string &rest args)
