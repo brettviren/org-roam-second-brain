@@ -535,6 +535,13 @@ Returns list of (position heading-text embedding) tuples."
 
 ;;; Main Embedding Functions
 
+(defun org-roam-semantic--embed-query-sync (query-text)
+  "Generate embedding for QUERY-TEXT synchronously.
+Uses url-retrieve-synchronously; appropriate for interactive search queries
+where the user is already waiting.  This is the designated query path,
+separate from the async pipeline used for indexing."
+  (org-roam-ai-generate-embedding query-text))
+
 (defun org-roam-semantic--generate-embedding (text)
   "Generate embedding for text synchronously."
   (org-roam-ai-generate-embedding text))
