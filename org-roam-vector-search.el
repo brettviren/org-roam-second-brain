@@ -37,11 +37,12 @@
   :group 'org-roam
   :prefix "org-roam-semantic-")
 
-(defcustom org-roam-semantic-embedding-url "http://localhost:8080"
+(defcustom org-roam-semantic-embedding-url "http://localhost:8080/v1"
   "Base URL for embeddings API server (OpenAI-compatible).
-This should point to your embedding service. Common values:
-- http://localhost:8080 (Infinity local)
-- http://localhost:11434 (Ollama local)"
+This should point to your embedding service, including the API version path.
+Common values:
+- http://localhost:8080/v1 (llama.cpp or Infinity local)
+- http://localhost:11434/v1 (Ollama local)"
   :type 'string
   :group 'org-roam-vector-search)
 

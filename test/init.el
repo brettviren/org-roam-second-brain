@@ -88,7 +88,7 @@
   :custom
   (sb/show-digest-on-startup nil)
   ;; Point at your llama-server instance
-  (org-roam-semantic-embedding-url "http://localhost:8080")
+  (org-roam-semantic-embedding-url "http://localhost:8080/v1")
   ;; Match the model name exactly as llama-server reports it
   ;; find name with:
   ;; curl http://localhost:8080/v1/models|jq '.models.[0].name'
