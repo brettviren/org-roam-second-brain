@@ -183,31 +183,27 @@ If CUTOFF is provided, filters results to only include similarities above that t
   "Extract content including title, properly skipping all front matter."
   (with-temp-buffer
     (insert-file-contents file)
-
-    (let (title content)
-      ;; Extract title
-      (goto-char (point-min))
-      (when (re-search-forward "^#\\+title:\\s-*\\(.+\\)$" nil t)
-        (setq title (match-string 1)))
-
-      ;; Skip to after properties drawer
-      (goto-char (point-min))
-      (when (re-search-forward "^:END:" nil t)
-        (forward-line 1))
-
+    (delay-mode-hooks (org-mode))
+    (let* ((tree (org-element-parse-buffer))
+           (title (org-roam-semantic--file-title tree))
+           (first-section (let ((c (org-element-contents tree)))
+                            (when (eq (org-element-type (car c)) 'section) (car c))))
+           (prop-drawer (when first-section
+                          (org-element-map first-section 'property-drawer #'identity nil t)))
+           content)
+      ;; Position after file-level property drawer, then skip keyword lines and blanks
+      (goto-char (if prop-drawer
+                     (org-element-property :end prop-drawer)
+                   (point-min)))
       ;; Skip ALL keyword lines (#+title:, #+filetags:, etc.)
       (while (and (not (eobp))
                   (looking-at "^#\\+[a-zA-Z_-]+:"))
         (forward-line 1))
-
       ;; Skip blank lines
       (while (and (not (eobp))
                   (looking-at "^\\s-*$"))
         (forward-line 1))
-
-      ;; Get actual content
       (setq content (buffer-substring-no-properties (point) (point-max)))
-
       (org-roam-semantic--normalize-text
        (if title
            (concat title ". " content)
@@ -405,82 +401,63 @@ if it exceeds the maximum, logging a warning.  Otherwise returns TEXT as-is."
 Returns list of (position heading-text content word-count level)."
   (with-temp-buffer
     (insert-file-contents file)
-    (org-mode)
-    (let ((chunks '())
-          (file-title nil))
-
-      ;; Get file title for file-level chunk
-      (goto-char (point-min))
-      (when (re-search-forward "^#\\+title:\\s-*\\(.+\\)$" nil t)
-        (setq file-title (match-string 1)))
-
-      ;; Use org-mode outline navigation instead of org-map-entries
-      (goto-char (point-min))
-      (message "Debug Parse: Starting manual heading scan...")
-      (let ((heading-count 0))
-        (while (re-search-forward "^\\*+ " nil t)
-          (save-excursion
-            (beginning-of-line)
-            (when (org-at-heading-p)
-              (cl-incf heading-count)
-              (let* ((heading-pos (point))
-                     (heading-components (org-heading-components))
-                     (heading-text (nth 4 heading-components))
-                     (level (nth 0 heading-components))
-                     (content-start (progn
-                                      (forward-line 1)
-                                      (point)))
-                     (content-end (save-excursion
-                                    (if (outline-next-heading)
-                                        (point)
-                                      (point-max))))
-                     (content (buffer-substring-no-properties content-start content-end))
-                     (full-content (concat heading-text ". " content))
-                     (word-count (org-roam-semantic--count-words full-content)))
-
-                ;; Debug: Show all sections found
-                (message "Debug Parse: Found section '%s' at pos %d with %d words (level %d)"
-                         heading-text heading-pos word-count level)
-
-                ;; Include all chunks - mark those below threshold differently
-                (if (>= word-count org-roam-semantic-min-chunk-size)
-                    (progn
-                      (message "Debug Parse: INCLUDING '%s' (%d words >= %d minimum)"
-                               heading-text word-count org-roam-semantic-min-chunk-size)
-                      (push (list heading-pos heading-text full-content word-count level :embedding) chunks))
-                  (progn
-                    (message "Debug Parse: INCLUDING (ID-only) '%s' (%d words < %d minimum)"
-                             heading-text word-count org-roam-semantic-min-chunk-size)
-                    (push (list heading-pos heading-text full-content word-count level :id-only) chunks)))))))
-        (message "Debug Parse: Manual scan completed, found %d headings" heading-count))
-
-
-
+    (delay-mode-hooks (org-mode))
+    (let* ((tree (org-element-parse-buffer))
+           (chunks '()))
+      (message "Debug Parse: Starting heading scan...")
+      (org-element-map tree 'headline
+        (lambda (hl)
+          (let* ((heading-pos (org-element-property :begin hl))
+                 (heading-text (org-roam-semantic--normalize-headline-text hl))
+                 (level (org-element-property :level hl))
+                 (children (org-element-contents hl))
+                 (section (when (and children
+                                     (eq (org-element-type (car children)) 'section))
+                            (car children)))
+                 (content-start (org-element-property :contents-begin hl))
+                 (section-end (when section (org-element-property :end section)))
+                 (content (if (and content-start section-end)
+                              (buffer-substring-no-properties content-start section-end)
+                            ""))
+                 (full-content (concat heading-text ". " content))
+                 (word-count (org-roam-semantic--count-words full-content)))
+            (message "Debug Parse: Found section '%s' at pos %d with %d words (level %d)"
+                     heading-text heading-pos word-count level)
+            (if (>= word-count org-roam-semantic-min-chunk-size)
+                (progn
+                  (message "Debug Parse: INCLUDING '%s' (%d words >= %d minimum)"
+                           heading-text word-count org-roam-semantic-min-chunk-size)
+                  (push (list heading-pos heading-text full-content word-count level :embedding)
+                        chunks))
+              (progn
+                (message "Debug Parse: INCLUDING (ID-only) '%s' (%d words < %d minimum)"
+                         heading-text word-count org-roam-semantic-min-chunk-size)
+                (push (list heading-pos heading-text full-content word-count level :id-only)
+                      chunks))))))
+      (message "Debug Parse: Scan completed, found %d headings" (length chunks))
       (nreverse chunks))))
 
 (defun org-roam-semantic--get-chunk-content (file position)
   "Get the content for a chunk at POSITION in FILE."
   (with-temp-buffer
     (insert-file-contents file)
-    (org-mode)
-    (goto-char position)
+    (delay-mode-hooks (org-mode))
     (if (= position (point-min))
         ;; File-level chunk
         (org-roam-semantic--get-content file)
-      ;; Section-level chunk
-      (let* ((level (save-excursion
-                      (when (looking-at "^\\(\\*+\\)")
-                        (length (match-string 1)))))
-             (heading-text (save-excursion
-                             (when (looking-at "^\\*+\\s-+\\(.+\\)$")
-                               (match-string 1))))
-             (content-start (progn (forward-line 1) (point)))
-             (content-end (progn
-                            (if (re-search-forward (format "^\\*\\{1,%d\\}\\s-" level) nil t)
-                                (match-beginning 0)
-                              (point-max))))
-             (content (buffer-substring-no-properties content-start content-end)))
-        (concat heading-text ". " content)))))
+      ;; Section-level chunk: find headline at POSITION and return its full subtree content
+      (let* ((tree (org-element-parse-buffer))
+             (hl (car (org-element-map tree 'headline
+                        (lambda (h)
+                          (when (= (org-element-property :begin h) position) h))
+                        nil t)))
+             (heading-text (when hl (org-roam-semantic--normalize-headline-text hl)))
+             (contents-begin (when hl (org-element-property :contents-begin hl)))
+             (end (when hl (org-element-property :end hl)))
+             (content (if (and contents-begin end)
+                          (buffer-substring-no-properties contents-begin end)
+                        "")))
+        (concat (or heading-text "") ". " content)))))
 
 ;;; OpenAI-Compatible API Functions
 
@@ -585,17 +562,23 @@ Does NOT call `save-buffer` (so it is safe in save hooks)."
               ;; Store at heading level - find heading by identifier
               (progn
                 (cond
-                 ;; String identifier - search by heading text
+                 ;; String identifier - find heading by normalized text
                  ((stringp identifier)
-                  (goto-char (point-min))
-                  (unless (re-search-forward (format "^\\*+\\s-+%s\\s-*$" (regexp-quote identifier)) nil t)
-                    (error "Cannot find heading with text: %s" identifier))
-                  (beginning-of-line))
+                  (let* ((tree (org-element-parse-buffer))
+                         (hl (org-element-map tree 'headline
+                               (lambda (h)
+                                 (when (string= (org-roam-semantic--normalize-headline-text h)
+                                                identifier)
+                                   h))
+                               nil t)))
+                    (unless hl
+                      (error "Cannot find heading with text: %s" identifier))
+                    (goto-char (org-element-property :begin hl))))
                  ;; Numeric identifier - go to position
                  ((numberp identifier)
                   (goto-char identifier)
                   (beginning-of-line)
-                  (unless (looking-at "^\\*")
+                  (unless (org-at-heading-p)
                     (error "Position %d is not at a heading" identifier)))
                  (t
                   (error "Invalid identifier type: %s" identifier)))
@@ -627,15 +610,19 @@ This allows short sections to get IDs for future expansion."
     (require 'org)
     (save-excursion
       (org-with-wide-buffer
-        (goto-char (point-min))
-        (when (re-search-forward (format "^\\*+\\s-+%s\\s-*$" (regexp-quote heading-text)) nil t)
-          (beginning-of-line)
-          ;; Only add ID if one doesn't exist
-          (unless (org-entry-get (point) "ID")
-            (org-entry-put (point) "ID" (org-roam-semantic--generate-chunk-id))
-            (message "Added ID to short section: %s" heading-text)
-            ;; Mark buffer as modified
-            (set-buffer-modified-p t)))))))
+        (let* ((tree (org-element-parse-buffer))
+               (hl (org-element-map tree 'headline
+                     (lambda (h)
+                       (when (string= (org-roam-semantic--normalize-headline-text h)
+                                      heading-text)
+                         h))
+                     nil t)))
+          (when hl
+            (goto-char (org-element-property :begin hl))
+            (unless (org-entry-get (point) "ID")
+              (org-entry-put (point) "ID" (org-roam-semantic--generate-chunk-id))
+              (message "Added ID to short section: %s" heading-text)
+              (set-buffer-modified-p t))))))))
 
 (defun org-roam-semantic--get-embedding (file &optional position)
   "Retrieve embedding vector from FILE at POSITION.
@@ -643,68 +630,62 @@ If POSITION is nil, gets file-level embedding.
 If POSITION is specified, gets embedding from heading at that position."
   (with-temp-buffer
     (insert-file-contents file)
-    (org-mode)
-    (goto-char (or position (point-min)))
-    (when (re-search-forward "^[ \t]*:EMBEDDING:[ \t]*\\(.*\\)$"
-                             (if position
-                                 (save-excursion
-                                   (forward-line 10) ; Look within property drawer
-                                   (point))
-                               nil) t)
-      (let ((embedding-str (match-string 1)))
-        (when (and embedding-str (not (string-empty-p embedding-str)))
-          (condition-case err
-              (mapcar 'string-to-number (split-string embedding-str))
-            (error
-             (message "Error parsing embedding in %s: %s" (file-name-nondirectory file) err)
-             nil)))))))
+    (delay-mode-hooks (org-mode))
+    (let* ((tree (org-element-parse-buffer))
+           (emb-str
+            (if position
+                (let ((hl (car (org-element-map tree 'headline
+                                 (lambda (h)
+                                   (when (= (org-element-property :begin h) position) h))
+                                 nil t))))
+                  (when hl (org-element-property :EMBEDDING hl)))
+              (org-element-map tree 'node-property
+                (lambda (np)
+                  (when (string= (org-element-property :key np) "EMBEDDING")
+                    (org-element-property :value np)))
+                nil t 'headline))))
+      (when (and emb-str (not (string-empty-p emb-str)))
+        (condition-case err
+            (mapcar #'string-to-number (split-string emb-str))
+          (error
+           (message "Error parsing embedding in %s: %s" (file-name-nondirectory file) err)
+           nil))))))
 
 (defun org-roam-semantic--get-all-embeddings (file)
   "Retrieve all embeddings from FILE.
 Returns list of (position heading-text embedding) tuples."
   (with-temp-buffer
     (insert-file-contents file)
-    (org-mode)
-    (let ((embeddings '())
-          (file-title nil))
+    (delay-mode-hooks (org-mode))
+    (let* ((tree (org-element-parse-buffer))
+           (file-title (org-roam-semantic--file-title tree))
+           (embeddings '()))
 
-      ;; Get file title
-      (goto-char (point-min))
-      (when (re-search-forward "^#\\+title:\\s-*\\(.+\\)$" nil t)
-        (setq file-title (match-string 1)))
+      ;; File-level EMBEDDING property (in preamble property drawer, before first headline)
+      (let ((emb-str (org-element-map tree 'node-property
+                       (lambda (np)
+                         (when (string= (org-element-property :key np) "EMBEDDING")
+                           (org-element-property :value np)))
+                       nil t 'headline)))
+        (when (and emb-str (not (string-empty-p emb-str)))
+          (condition-case err
+              (push (list (point-min) (or file-title "File")
+                          (mapcar #'string-to-number (split-string emb-str)))
+                    embeddings)
+            (error (message "Error parsing file-level embedding: %s" err)))))
 
-      ;; Check for file-level embedding
-      (goto-char (point-min))
-      (when (re-search-forward "^[ \t]*:EMBEDDING:[ \t]*\\(.*\\)$" nil t)
-        (let ((embedding-str (match-string 1)))
-          (when (and embedding-str (not (string-empty-p embedding-str)))
-            (condition-case err
-                (let ((embedding (mapcar 'string-to-number (split-string embedding-str))))
-                  (push (list (point-min) (or file-title "File") embedding) embeddings))
-              (error
-               (message "Error parsing file-level embedding: %s" err))))))
-
-      ;; Find all heading-level embeddings
-      (goto-char (point-min))
-      (while (re-search-forward "^\\(\\*+\\)\\s-+\\(.+\\)$" nil t)
-        (let* ((heading-pos (match-beginning 0))
-               (heading-text (match-string 2))
-               (property-end (save-excursion
-                               (forward-line 1)
-                               (when (looking-at "^[ \t]*:PROPERTIES:")
-                                 (re-search-forward "^[ \t]*:END:" nil t)
-                                 (point)))))
-          (when property-end
-            (save-excursion
-              (goto-char heading-pos)
-              (when (re-search-forward "^[ \t]*:EMBEDDING:[ \t]*\\(.*\\)$" property-end t)
-                (let ((embedding-str (match-string 1)))
-                  (when (and embedding-str (not (string-empty-p embedding-str)))
-                    (condition-case err
-                        (let ((embedding (mapcar 'string-to-number (split-string embedding-str))))
-                          (push (list heading-pos heading-text embedding) embeddings))
-                      (error
-                       (message "Error parsing embedding for %s: %s" heading-text err))))))))))
+      ;; Heading-level EMBEDDING properties via the PROPERTIES drawer
+      (org-element-map tree 'headline
+        (lambda (hl)
+          (let ((emb-str (org-element-property :EMBEDDING hl)))
+            (when (and emb-str (not (string-empty-p emb-str)))
+              (condition-case err
+                  (push (list (org-element-property :begin hl)
+                              (org-roam-semantic--normalize-headline-text hl)
+                              (mapcar #'string-to-number (split-string emb-str)))
+                        embeddings)
+                (error (message "Error parsing embedding for %s: %s"
+                                (org-roam-semantic--normalize-headline-text hl) err)))))))
 
       (nreverse embeddings))))
 
@@ -1417,10 +1398,9 @@ results in *Similar Notes* buffer with clickable org-id links."
   (condition-case nil
       (with-temp-buffer
         (insert-file-contents file)
-        (goto-char (point-min))
-        (if (re-search-forward "^#\\+title:\\s-*\\(.+\\)$" nil t)
-            (string-trim (match-string 1))
-          (file-name-sans-extension (file-name-nondirectory file))))
+        (delay-mode-hooks (org-mode))
+        (or (org-roam-semantic--file-title (org-element-parse-buffer))
+            (file-name-sans-extension (file-name-nondirectory file))))
     (error (file-name-sans-extension (file-name-nondirectory file)))))
 
 (defun org-roam-semantic--get-node-id (file)
@@ -1428,9 +1408,12 @@ results in *Similar Notes* buffer with clickable org-id links."
   (condition-case nil
       (with-temp-buffer
         (insert-file-contents file)
-        (goto-char (point-min))
-        (when (re-search-forward "^:ID:\\s-*\\(.+\\)$" nil t)
-          (string-trim (match-string 1))))
+        (delay-mode-hooks (org-mode))
+        (org-element-map (org-element-parse-buffer) 'node-property
+          (lambda (np)
+            (when (string= (org-element-property :key np) "ID")
+              (string-trim (org-element-property :value np))))
+          nil t 'headline))
     (error nil)))
 
 ;;;###autoload
