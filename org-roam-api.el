@@ -62,17 +62,19 @@
     (condition-case nil
         (with-temp-buffer
           (insert-file-contents file)
-          (org-mode)
-          (goto-char (point-min))
-          (let ((props '()))
-            (when (re-search-forward "^:PROPERTIES:" nil t)
-              (while (and (forward-line 1)
-                         (not (looking-at "^:END:"))
-                         (not (eobp)))
-                (when (looking-at "^:\\([^:]+\\):\\s-*\\(.*\\)\\s-*$")
-                  (push (cons (downcase (match-string 1))
-                             (match-string 2)) props))))
-            props))
+          (delay-mode-hooks (org-mode))
+          (let* ((tree (org-element-parse-buffer))
+                 (first-section (let ((c (org-element-contents tree)))
+                                  (when (eq (org-element-type (car c)) 'section)
+                                    (car c))))
+                 (props '()))
+            (when first-section
+              (org-element-map first-section 'node-property
+                (lambda (np)
+                  (push (cons (downcase (org-element-property :key np))
+                              (org-element-property :value np))
+                        props))))
+            (nreverse props)))
       (error '()))))
 
 (defun my/api--strip-embedding-properties (content)
@@ -403,24 +405,32 @@ Returns semantically similar notes with full content for RAG applications."
         (condition-case nil
             (with-temp-buffer
               (insert-file-contents draft-file)
-              (let (original-request current-draft created)
-                (goto-char (point-min))
-                (when (re-search-forward ":ORIGINAL-REQUEST: \\(.+\\)" nil t)
-                  (setq original-request (match-string 1)))
-                (goto-char (point-min))
-                (when (re-search-forward ":CREATED: \\(.+\\)" nil t)
-                  (setq created (match-string 1)))
+              (delay-mode-hooks (org-mode))
+              (let* ((tree (org-element-parse-buffer))
+                     (first-section (let ((c (org-element-contents tree)))
+                                      (when (eq (org-element-type (car c)) 'section)
+                                        (car c))))
+                     original-request current-draft created)
+                (when first-section
+                  (org-element-map first-section 'node-property
+                    (lambda (np)
+                      (let ((key (org-element-property :key np))
+                            (val (org-element-property :value np)))
+                        (cond
+                         ((string= key "ORIGINAL-REQUEST") (setq original-request val))
+                         ((string= key "CREATED") (setq created val))))))))
 
-                ;; Content extraction using working method
-                (goto-char (point-min))
-                (when (search-forward "* Current Draft" nil t)
-                  (when (search-forward "#+begin_example" nil t)
-                    (forward-line 1)
-                    (let ((start (point)))
-                      (when (search-forward "#+end_example" nil t)
-                        (beginning-of-line)
-                        (setq current-draft (buffer-substring-no-properties start (point)))
-                        (setq current-draft (string-trim current-draft))))))
+                ;; Content extraction via org-element
+                (let* ((draft-hl (org-element-map tree 'headline
+                                   (lambda (h)
+                                     (when (string= (org-element-property :raw-value h)
+                                                    "Current Draft")
+                                       h))
+                                   nil t))
+                       (block (when draft-hl
+                                (org-element-map draft-hl 'example-block #'identity nil t))))
+                  (when block
+                    (setq current-draft (string-trim (org-element-property :value block)))))
 
                 (my/api--json-response
                  `((success . t)
@@ -469,30 +479,47 @@ Returns semantically similar notes with full content for RAG applications."
       ;; Update existing draft
       (with-temp-buffer
         (insert-file-contents draft-file)
-        (goto-char (point-min))
+        (delay-mode-hooks (org-mode))
+        (let* ((tree (org-element-parse-buffer))
+               (first-section (let ((c (org-element-contents tree)))
+                                (when (eq (org-element-type (car c)) 'section)
+                                  (car c)))))
 
-        ;; Update LAST-UPDATED property
-        (when (re-search-forward ":LAST-UPDATED: .*" nil t)
-          (replace-match (format ":LAST-UPDATED: %s"
-                                (format-time-string "%Y-%m-%dT%H:%M:%SZ"))))
+          ;; Update LAST-UPDATED property
+          (when first-section
+            (let ((np (org-element-map first-section 'node-property
+                        (lambda (np)
+                          (when (string= (org-element-property :key np) "LAST-UPDATED")
+                            np))
+                        nil t)))
+              (when np
+                (goto-char (org-element-property :begin np))
+                (delete-region (org-element-property :begin np)
+                               (org-element-property :end np))
+                (insert (format ":LAST-UPDATED: %s\n"
+                                (format-time-string "%Y-%m-%dT%H:%M:%SZ"))))))
 
-        ;; Update current draft content
-        (goto-char (point-min))
-        (when (search-forward "* Current Draft" nil t)
-          (when (search-forward "#+begin_example" nil t)
-            (forward-line 1)
-            (let ((start (point)))
-              (when (search-forward "#+end_example" nil t)
-                (beginning-of-line)
-                (delete-region start (point))
-                (insert content "\n")))))
+          ;; Update current draft content
+          (let* ((draft-hl (org-element-map tree 'headline
+                             (lambda (h)
+                               (when (string= (org-element-property :raw-value h)
+                                              "Current Draft")
+                                 h))
+                             nil t))
+                 (block (when draft-hl
+                          (org-element-map draft-hl 'example-block #'identity nil t))))
+            (when block
+              (goto-char (org-element-property :begin block))
+              (delete-region (org-element-property :begin block)
+                             (org-element-property :end block))
+              (insert (format "#+begin_example\n%s\n#+end_example\n\n" content))))
 
-        ;; Add revision history entry
-        (goto-char (point-max))
-        (insert (format "\n** %s - Revision\n" (format-time-string "%H:%M:%S")))
-        (insert (format "%s\n" revision-note))
+          ;; Add revision history entry
+          (goto-char (point-max))
+          (insert (format "\n** %s - Revision\n" (format-time-string "%H:%M:%S")))
+          (insert (format "%s\n" revision-note))
 
-        (write-file draft-file)))
+          (write-file draft-file))))
 
     (my/api--json-response
      `((success . t)
@@ -509,18 +536,21 @@ Returns semantically similar notes with full content for RAG applications."
     (if (file-exists-p draft-file)
         (condition-case nil
             (let (current-draft)
-              ;; Extract draft content using working method
+              ;; Extract draft content via org-element
               (with-temp-buffer
                 (insert-file-contents draft-file)
-                (goto-char (point-min))
-                (when (search-forward "* Current Draft" nil t)
-                  (when (search-forward "#+begin_example" nil t)
-                    (forward-line 1)
-                    (let ((start (point)))
-                      (when (search-forward "#+end_example" nil t)
-                        (beginning-of-line)
-                        (setq current-draft (buffer-substring-no-properties start (point)))
-                        (setq current-draft (string-trim current-draft)))))))
+                (delay-mode-hooks (org-mode))
+                (let* ((tree (org-element-parse-buffer))
+                       (draft-hl (org-element-map tree 'headline
+                                   (lambda (h)
+                                     (when (string= (org-element-property :raw-value h)
+                                                    "Current Draft")
+                                       h))
+                                   nil t))
+                       (block (when draft-hl
+                                (org-element-map draft-hl 'example-block #'identity nil t))))
+                  (when block
+                    (setq current-draft (string-trim (org-element-property :value block))))))
 
               (if (string-empty-p (or current-draft ""))
                   (my/api--json-response
@@ -688,23 +718,17 @@ LINKED-NOTE-ID and LINKED-NOTE-TITLE are optional if a note was created."
 
     (with-current-buffer (find-file-noselect daily-file)
       ;; Find or create Inbox section
-      (goto-char (point-min))
-      (let ((inbox-pos (re-search-forward "^\\* Inbox$" nil t)))
-        (if inbox-pos
-            ;; Found Inbox section - go to after the heading
-            (progn
-              (forward-line 1)
-              ;; Skip any existing entries to add at the end of Inbox section
-              (while (and (not (eobp))
-                         (or (looking-at "^\\*\\* ")
-                             (looking-at "^   ")
-                             (looking-at "^$")))
-                (forward-line 1))
-              ;; Back up to before the next section or end
-              (when (looking-at "^\\* ")
-                (forward-line -1)
-                (end-of-line)
-                (insert "\n")))
+      (let ((inbox-hl (org-element-map (org-element-parse-buffer) 'headline
+                        (lambda (h)
+                          (when (string= (org-element-property :raw-value h) "Inbox")
+                            h))
+                        nil t)))
+        (if inbox-hl
+            (let ((ce (org-element-property :contents-end inbox-hl)))
+              (goto-char (or ce (progn
+                                  (goto-char (org-element-property :begin inbox-hl))
+                                  (end-of-line)
+                                  (point)))))
           ;; No Inbox section - create one at the end
           (goto-char (point-max))
           (unless (bolp) (insert "\n"))
@@ -973,15 +997,26 @@ If FILE-LEVEL-ONLY is non-nil, only return one node per file (deduplicates alias
   (when (and file (file-exists-p file))
     (with-temp-buffer
       (insert-file-contents file)
-      (goto-char (point-min))
-      (let ((items '()))
-        (when (re-search-forward (format "^\\* %s$" section-name) nil t)
-          (forward-line 1)
-          (while (and (not (eobp))
-                      (not (looking-at "^\\* ")))
-            (when (looking-at "^- \\[ \\] \\(.+\\)$")
-              (push (match-string 1) items))
-            (forward-line 1)))
+      (delay-mode-hooks (org-mode))
+      (let* ((tree (org-element-parse-buffer))
+             (section-hl (org-element-map tree 'headline
+                           (lambda (h)
+                             (when (string= (org-element-property :raw-value h) section-name)
+                               h))
+                           nil t))
+             (items '()))
+        (when section-hl
+          (org-element-map section-hl 'item
+            (lambda (item)
+              (when (eq (org-element-property :checkbox item) 'off)
+                (let* ((para (car (org-element-contents item)))
+                       (text (when (and para (eq (org-element-type para) 'paragraph))
+                               (string-trim
+                                (buffer-substring-no-properties
+                                 (org-element-property :contents-begin para)
+                                 (org-element-property :contents-end para))))))
+                  (when text (push text items)))))
+            nil nil 'headline))
         (nreverse items)))))
 
 (defun my/api--file-modified-days-ago (file)
@@ -1047,14 +1082,19 @@ Returns list of unchecked item texts."
   (when (and file (file-exists-p file))
     (with-temp-buffer
       (insert-file-contents file)
-      (let ((items '())
-            (pattern (concat "^[ \t]*- \\[ \\].*\\[\\[" (regexp-quote person-name) "\\]\\]")))
-        ;; Find unchecked items mentioning this person
-        (goto-char (point-min))
-        (while (re-search-forward "^[ \t]*- \\[ \\] \\(.*\\)$" nil t)
-          (let ((item-text (match-string 1)))
-            (when (string-match-p (regexp-quote person-name) item-text)
-              (push (string-trim item-text) items))))
+      (delay-mode-hooks (org-mode))
+      (let ((items '()))
+        (org-element-map (org-element-parse-buffer) 'item
+          (lambda (item)
+            (when (eq (org-element-property :checkbox item) 'off)
+              (let* ((para (car (org-element-contents item)))
+                     (text (when (and para (eq (org-element-type para) 'paragraph))
+                             (string-trim
+                              (buffer-substring-no-properties
+                               (org-element-property :contents-begin para)
+                               (org-element-property :contents-end para))))))
+                (when (and text (string-match-p (regexp-quote person-name) text))
+                  (push text items))))))
         (nreverse items)))))
 
 (defun my/api-get-pending-followups ()
@@ -1172,33 +1212,34 @@ Returns entries grouped by day for weekly review."
         (when (file-exists-p daily-file)
           (with-temp-buffer
             (insert-file-contents daily-file)
-            (goto-char (point-min))
-            ;; Find Inbox section
-            (when (re-search-forward "^\\* Inbox$" nil t)
-              (forward-line 1)
-              ;; Parse inbox entries
-              (while (and (not (eobp))
-                          (not (looking-at "^\\* [^I]")))
-                (when (looking-at "^\\*\\* \\(DONE\\|TODO\\) /\\([^ ]+\\) → \\(.+\\)$")
-                  (let ((status (match-string 1))
-                        (command (match-string 2))
-                        (result (match-string 3))
-                        (captured nil)
-                        (original nil))
-                    ;; Extract properties
-                    (save-excursion
-                      (when (re-search-forward ":CAPTURED: \\(.+\\)" nil t)
-                        (setq captured (match-string 1)))
-                      (when (re-search-forward ":ORIGINAL: \\(.+\\)" nil t)
-                        (setq original (match-string 1))))
-                    (push `((status . ,status)
-                            (command . ,command)
-                            (result . ,result)
-                            (captured . ,captured)
-                            (original . ,original))
-                          day-entries)
-                    (setq total-entries (1+ total-entries))))
-                (forward-line 1)))))
+            (delay-mode-hooks (org-mode))
+            (let* ((tree (org-element-parse-buffer))
+                   (inbox-hl (org-element-map tree 'headline
+                               (lambda (h)
+                                 (when (and (= (org-element-property :level h) 1)
+                                            (string= (org-element-property :raw-value h) "Inbox"))
+                                   h))
+                               nil t)))
+              (when inbox-hl
+                ;; Parse direct child headlines of Inbox
+                (org-element-map inbox-hl 'headline
+                  (lambda (entry-hl)
+                    (let* ((todo (org-element-property :todo-keyword entry-hl))
+                           (raw (org-element-property :raw-value entry-hl)))
+                      (when (and todo raw
+                                 (string-match "^/\\([^ ]+\\)[[:space:]]→[[:space:]]\\(.+\\)$" raw))
+                        (let ((command (match-string 1 raw))
+                              (result (match-string 2 raw))
+                              (captured (org-element-property :CAPTURED entry-hl))
+                              (original (org-element-property :ORIGINAL entry-hl)))
+                          (push `((status . ,todo)
+                                  (command . ,command)
+                                  (result . ,result)
+                                  (captured . ,captured)
+                                  (original . ,original))
+                                day-entries)
+                          (setq total-entries (1+ total-entries))))))
+                  nil nil 'headline)))))
         (when day-entries
           (push `((date . ,date)
                   (entries . ,(nreverse day-entries))
@@ -1247,19 +1288,27 @@ Scans all org files for unchecked items mentioning untracked people."
     (dolist (file (directory-files-recursively org-roam-directory "\\.org$"))
       (with-temp-buffer
         (insert-file-contents file)
-        (goto-char (point-min))
-        (while (re-search-forward "^[ \t]*- \\[ \\] \\(.*\\[\\[.+\\]\\].*\\)$" nil t)
-          (let* ((item-text (match-string 1))
-                 (names (my/api--extract-link-names item-text)))
-            ;; Check each linked name
-            (dolist (name names)
-              (unless (or (gethash name seen-names)
-                          (my/api--node-exists-p name))
-                (puthash name t seen-names)
-                (push `((name . ,name)
-                        (item . ,(string-trim item-text))
-                        (file . ,file))
-                      dangling-items)))))))
+        (delay-mode-hooks (org-mode))
+        (org-element-map (org-element-parse-buffer) 'item
+          (lambda (item)
+            (when (and (eq (org-element-property :checkbox item) 'off)
+                       (org-element-map item 'link #'identity nil t))
+              (let* ((para (car (org-element-contents item)))
+                     (text (when (and para (eq (org-element-type para) 'paragraph))
+                             (string-trim
+                              (buffer-substring-no-properties
+                               (org-element-property :contents-begin para)
+                               (org-element-property :contents-end para))))))
+                (when text
+                  (let ((names (my/api--extract-link-names text)))
+                    (dolist (name names)
+                      (unless (or (gethash name seen-names)
+                                  (my/api--node-exists-p name))
+                        (puthash name t seen-names)
+                        (push `((name . ,name)
+                                (item . ,text)
+                                (file . ,file))
+                              dangling-items))))))))))
     (my/api--json-response
      `((success . t)
        (total . ,(length dangling-items))
@@ -1313,10 +1362,14 @@ Returns list of any person nodes that were created."
 
     (with-current-buffer (find-file-noselect daily-file)
       ;; Find or create Inbox section
-      (goto-char (point-min))
-      (let ((inbox-pos (re-search-forward "^\\* Inbox$" nil t)))
-        (if inbox-pos
+      (let ((inbox-hl (org-element-map (org-element-parse-buffer) 'headline
+                        (lambda (h)
+                          (when (string= (org-element-property :raw-value h) "Inbox")
+                            h))
+                        nil t)))
+        (if inbox-hl
             (progn
+              (goto-char (org-element-property :begin inbox-hl))
               (end-of-line)
               (newline))
           ;; Create Inbox section at end
@@ -1372,16 +1425,18 @@ If SECTION is provided, return only that heading's content."
               (setq content
                     (with-temp-buffer
                       (insert content)
-                      (org-mode)
-                      (goto-char (point-min))
-                      (if (re-search-forward 
-                           (format "^\\*+[ \t]+%s" (regexp-quote section)) nil t)
-                          (let ((start (line-beginning-position))
-                                (end (save-excursion
-                                       (org-end-of-subtree t t)
-                                       (point))))
-                            (buffer-substring-no-properties start end))
-                        (format "Section not found: %s" section)))))
+                      (delay-mode-hooks (org-mode))
+                      (let* ((tree (org-element-parse-buffer))
+                             (hl (org-element-map tree 'headline
+                                   (lambda (h)
+                                     (when (string= (org-element-property :raw-value h) section)
+                                       h))
+                                   nil t)))
+                        (if hl
+                            (buffer-substring-no-properties
+                             (org-element-property :begin hl)
+                             (org-element-property :end hl))
+                          (format "Section not found: %s" section))))))
             (json-encode
              `((success . t)
                (file . ,file)
@@ -1419,56 +1474,56 @@ MODE is \"append\" (default), \"prepend\", or \"replace\"."
               (org-mode)
               (if section
                   ;; Target specific section
-                  (progn
-                    (goto-char (point-min))
-                    (if (re-search-forward 
-                         (format "^\\(\\*+\\)[ \t]+%s" (regexp-quote section)) nil t)
-                        (let ((level (length (match-string 1))))
+                  (let ((hl (org-element-map (org-element-parse-buffer) 'headline
+                              (lambda (h)
+                                (when (string= (org-element-property :raw-value h) section)
+                                  h))
+                              nil t)))
+                    (if hl
+                        (progn
+                          (goto-char (org-element-property :begin hl))
+                          (end-of-line)
                           (cond
                            ((string= mode "replace")
-                            ;; Replace section content (keep heading)
-                            (end-of-line)
                             (let ((start (point))
-                                  (end (save-excursion
-                                         (org-end-of-subtree t t)
-                                         (point))))
+                                  (end (org-element-property :end hl)))
                               (delete-region start end)
                               (insert "\n" content "\n")))
                            ((string= mode "prepend")
-                            ;; Insert right after heading
-                            (end-of-line)
                             (insert "\n" content))
                            (t ; append (default)
-                            ;; Insert at end of section, before next heading
-                            (let ((end (save-excursion
-                                         (org-end-of-subtree t t)
-                                         (skip-chars-backward " \t\n")
-                                         (point))))
+                            (let ((end (org-element-property :contents-end hl)))
                               (goto-char end)
+                              (skip-chars-backward " \t\n")
                               (insert "\n" content)))))
                       ;; Section not found - create it
                       (goto-char (point-max))
                       (unless (bolp) (insert "\n"))
                       (insert (format "* %s\n%s\n" section content))))
                 ;; No section - operate on whole file
-                (cond
-                 ((string= mode "replace")
-                  ;; Replace everything after properties/title
-                  (goto-char (point-min))
-                  (when (re-search-forward "^#\\+title:.*\n+" nil t)
-                    (delete-region (point) (point-max))
-                    (insert content "\n")))
-                 ((string= mode "prepend")
-                  ;; Insert after properties/title
-                  (goto-char (point-min))
-                  (if (re-search-forward "^#\\+title:.*\n+" nil t)
-                      (insert content "\n")
-                    (goto-char (point-min))
-                    (insert content "\n")))
-                 (t ; append (default)
-                  (goto-char (point-max))
-                  (unless (bolp) (insert "\n"))
-                  (insert content "\n"))))
+                (let* ((tree (org-element-parse-buffer))
+                       (title-kw (org-element-map tree 'keyword
+                                   (lambda (kw)
+                                     (when (string= (org-element-property :key kw) "TITLE")
+                                       kw))
+                                   nil t)))
+                  (cond
+                   ((string= mode "replace")
+                    (when title-kw
+                      (goto-char (org-element-property :end title-kw))
+                      (delete-region (point) (point-max))
+                      (insert content "\n")))
+                   ((string= mode "prepend")
+                    (if title-kw
+                        (progn
+                          (goto-char (org-element-property :end title-kw))
+                          (insert content "\n"))
+                      (goto-char (point-min))
+                      (insert content "\n")))
+                   (t ; append (default)
+                    (goto-char (point-max))
+                    (unless (bolp) (insert "\n"))
+                    (insert content "\n")))))
               (my/api--save-buffer-no-hooks)
               (let ((updated-content (my/api--strip-embedding-properties
                                       (buffer-substring-no-properties (point-min) (point-max)))))
@@ -1648,9 +1703,16 @@ NEW-TITLE is the new title for the note."
             (json-encode (list (cons (quote success) :json-false)
                               (cons (quote error) (format "Note not found: %s" identifier))))
           (with-current-buffer (find-file-noselect file)
-            (goto-char (point-min))
-            (when (re-search-forward "^#\\+title:.*$" nil t)
-              (replace-match (format "#+title: %s" new-title)))
+            (let ((title-kw (org-element-map (org-element-parse-buffer) 'keyword
+                              (lambda (kw)
+                                (when (string= (org-element-property :key kw) "TITLE")
+                                  kw))
+                              nil t)))
+              (when title-kw
+                (goto-char (org-element-property :begin title-kw))
+                (delete-region (org-element-property :begin title-kw)
+                               (org-element-property :end title-kw))
+                (insert (format "#+title: %s\n" new-title))))
             (my/api--save-buffer-no-hooks))
           (let* ((node (org-roam-node-at-point))
                  (new-slug (downcase (replace-regexp-in-string "[^a-zA-Z0-9]+" "-" new-title)))
@@ -1688,25 +1750,40 @@ TAG is the tag to add or remove (without colons)."
             (json-encode (list (cons (quote success) :json-false)
                               (cons (quote error) (format "Note not found: %s" identifier))))
           (with-current-buffer (find-file-noselect file)
-            (goto-char (point-min))
-            (let ((filetags-line (when (re-search-forward "^#\\+filetags:\\s-*\\(.*\\)$" nil t)
-                                  (match-string 1))))
-              (goto-char (point-min))
+            (let* ((tree (org-element-parse-buffer))
+                   (filetags-kw (org-element-map tree 'keyword
+                                  (lambda (kw)
+                                    (when (string= (org-element-property :key kw) "FILETAGS")
+                                      kw))
+                                  nil t))
+                   (filetags-val (when filetags-kw
+                                   (org-element-property :value filetags-kw))))
               (cond
                ((string= action "add")
-                (if filetags-line
+                (if filetags-kw
                     (progn
-                      (re-search-forward "^#\\+filetags:.*$" nil t)
-                      (replace-match (format "#+filetags: %s:%s:" 
-                                            (string-trim-right filetags-line ":") tag)))
-                  (re-search-forward "^#\\+title:.*$" nil t)
-                  (end-of-line)
-                  (insert (format "\n#+filetags: :%s:" tag))))
+                      (goto-char (org-element-property :begin filetags-kw))
+                      (delete-region (org-element-property :begin filetags-kw)
+                                     (org-element-property :end filetags-kw))
+                      (insert (format "#+filetags: %s:%s:\n"
+                                      (string-trim-right filetags-val ":") tag)))
+                  (let ((title-kw (org-element-map tree 'keyword
+                                    (lambda (kw)
+                                      (when (string= (org-element-property :key kw) "TITLE")
+                                        kw))
+                                    nil t)))
+                    (goto-char (if title-kw
+                                   (org-element-property :end title-kw)
+                                 (point-min)))
+                    (insert (format "#+filetags: :%s:\n" tag)))))
                ((string= action "remove")
-                (when filetags-line
-                  (re-search-forward "^#\\+filetags:.*$" nil t)
-                  (replace-match (format "#+filetags: %s" 
-                                        (replace-regexp-in-string (format ":%s:" tag) ":" filetags-line))))))
+                (when filetags-kw
+                  (goto-char (org-element-property :begin filetags-kw))
+                  (delete-region (org-element-property :begin filetags-kw)
+                                 (org-element-property :end filetags-kw))
+                  (insert (format "#+filetags: %s\n"
+                                  (replace-regexp-in-string (format ":%s:" tag) ":"
+                                                            filetags-val))))))
               (my/api--save-buffer-no-hooks)
               (org-roam-db-sync)
               (json-encode (list (cons (quote success) t)
@@ -1733,11 +1810,14 @@ SECTION is optional heading to add link under."
                               (cons (quote error) "Source or destination note not found")))
           (with-current-buffer (find-file-noselect from-file)
             (if section
-                (progn
-                  (goto-char (point-min))
-                  (if (re-search-forward (format "^\\*+[ \t]+%s" (regexp-quote section)) nil t)
-                      (progn
-                        (org-end-of-subtree t t)
+                (let ((hl (org-element-map (org-element-parse-buffer) 'headline
+                            (lambda (h)
+                              (when (string= (org-element-property :raw-value h) section)
+                                h))
+                            nil t)))
+                  (if hl
+                      (let ((end (org-element-property :contents-end hl)))
+                        (goto-char end)
                         (skip-chars-backward " \t\n")
                         (insert (format "\n- [[id:%s][%s]]" to-id to-title)))
                     (goto-char (point-max))
