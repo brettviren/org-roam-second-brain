@@ -54,11 +54,8 @@
                         org-roam-directory))
            (task-heading (substring-no-properties (org-get-heading t t t t)))
            (task-id (org-id-get-create))
-           (project-title (save-excursion
-                           (goto-char (point-min))
-                           (if (re-search-forward "^#\\+title: \\(.+\\)$" nil t)
-                               (match-string-no-properties 1)
-                             "No project")))
+           (project-title (or (cadr (assoc "TITLE" (org-collect-keywords '("TITLE"))))
+                              "No project"))
            (entry-text (format "* %s %s: [[id:%s][%s]] (%s)\n"
                               timestamp
                               org-state
@@ -89,14 +86,20 @@
   "Change the TODO state of HEADING in FILE to NEW-STATE.
 Use this from emacsclient to trigger hooks properly."
   (with-current-buffer (find-file-noselect (expand-file-name file))
-    (goto-char (point-min))
-    (if (re-search-forward (concat "^\\*+ \\(TODO\\|IN-PROGRESS\\|BLOCKED\\|DONE\\|CANCELLED\\) "
-                                   (regexp-quote heading)) nil t)
-        (progn
-          (org-todo new-state)
-          (save-buffer)
-          (format "Changed '%s' to %s" heading new-state))
-      (error "Could not find task: %s" heading))))
+    (let ((hl (org-element-map (org-element-parse-buffer) 'headline
+                (lambda (h)
+                  (when (and (member (org-element-property :todo-keyword h)
+                                     '("TODO" "IN-PROGRESS" "BLOCKED" "DONE" "CANCELLED"))
+                             (string= (org-element-property :raw-value h) heading))
+                    h))
+                nil t)))
+      (if hl
+          (progn
+            (goto-char (org-element-property :begin hl))
+            (org-todo new-state)
+            (save-buffer)
+            (format "Changed '%s' to %s" heading new-state))
+        (error "Could not find task: %s" heading)))))
 
 (provide 'org-agenda-project-tracking)
 ;;; org-agenda-project-tracking.el ends here
