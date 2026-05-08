@@ -1217,9 +1217,11 @@ while ignoring organizational edits (tag changes, rescheduling)."
             "^[ \t]*\\(?:SCHEDULED\\|DEADLINE\\|CLOSED\\):.*\n?" nil t)
       (replace-match ""))
     ;; Remove #+keyword: lines except #+title:
+    ;; (Emacs regexp has no lookahead, so capture the keyword and skip "title")
     (goto-char (point-min))
-    (while (re-search-forward "^#\\+\\(?!title:\\)[a-zA-Z_-]+:.*\n?" nil t)
-      (replace-match ""))
+    (while (re-search-forward "^#\\+\\([a-zA-Z_-]+\\):.*\n?" nil t)
+      (unless (string-equal-ignore-case (match-string 1) "title")
+        (replace-match "")))
     ;; Strip TODO keywords from headlines
     (goto-char (point-min))
     (while (re-search-forward
