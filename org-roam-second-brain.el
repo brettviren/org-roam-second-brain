@@ -169,17 +169,19 @@ If nil, AI functions will not be available."
     (condition-case nil
         (with-temp-buffer
           (insert-file-contents file)
-          (org-mode)
-          (goto-char (point-min))
-          (let ((props '()))
-            (when (re-search-forward "^:PROPERTIES:" nil t)
-              (while (and (forward-line 1)
-                          (not (looking-at "^:END:"))
-                          (not (eobp)))
-                (when (looking-at "^:\\([^:]+\\):\\s-*\\(.*\\)\\s-*$")
-                  (push (cons (downcase (match-string 1))
-                              (match-string 2)) props))))
-            props))
+          (delay-mode-hooks (org-mode))
+          (let* ((tree (org-element-parse-buffer))
+                 (first-section (let ((c (org-element-contents tree)))
+                                  (when (eq (org-element-type (car c)) 'section)
+                                    (car c))))
+                 (props '()))
+            (when first-section
+              (org-element-map first-section 'node-property
+                (lambda (np)
+                  (push (cons (downcase (org-element-property :key np))
+                              (org-element-property :value np))
+                        props))))
+            (nreverse props)))
       (error '()))))
 
 (defun sb/--file-modified-days-ago (file)
@@ -195,15 +197,26 @@ If nil, AI functions will not be available."
   (when (and file (file-exists-p file))
     (with-temp-buffer
       (insert-file-contents file)
-      (goto-char (point-min))
-      (let ((items '()))
-        (when (re-search-forward (format "^\\* %s$" (regexp-quote section-name)) nil t)
-          (forward-line 1)
-          (while (and (not (eobp))
-                      (not (looking-at "^\\* ")))
-            (when (looking-at "^- \\[ \\] \\(.+\\)$")
-              (push (match-string 1) items))
-            (forward-line 1)))
+      (delay-mode-hooks (org-mode))
+      (let* ((tree (org-element-parse-buffer))
+             (section-hl (org-element-map tree 'headline
+                           (lambda (h)
+                             (when (string= (org-element-property :raw-value h) section-name)
+                               h))
+                           nil t))
+             (items '()))
+        (when section-hl
+          (org-element-map section-hl 'item
+            (lambda (item)
+              (when (eq (org-element-property :checkbox item) 'off)
+                (let* ((para (car (org-element-contents item)))
+                       (text (when (and para (eq (org-element-type para) 'paragraph))
+                               (string-trim
+                                (buffer-substring-no-properties
+                                 (org-element-property :contents-begin para)
+                                 (org-element-property :contents-end para))))))
+                  (when text (push text items)))))
+            nil nil 'headline))
         (nreverse items)))))
 
 (defun sb/--extract-link-names (text)
@@ -261,23 +274,24 @@ If nil, AI functions will not be available."
 
 (defun sb/--daily-has-related-section-p ()
   "Check if current buffer has a Related Notes section."
-  (save-excursion
-    (goto-char (point-min))
-    (re-search-forward "^\\*\\* Related Notes" nil t)))
+  (org-element-map (org-element-parse-buffer) 'headline
+    (lambda (h)
+      (when (and (= (org-element-property :level h) 2)
+                 (string= (org-element-property :raw-value h) "Related Notes"))
+        t))
+    nil t))
 
 (defun sb/--daily-remove-related-section ()
   "Remove existing Related Notes section from current buffer."
-  (save-excursion
-    (goto-char (point-min))
-    (when (re-search-forward "^\\*\\* Related Notes" nil t)
-      (let ((start (match-beginning 0)))
-        (forward-line 1)
-        (while (and (not (eobp))
-                    (or (looking-at "^- \\[\\[")
-                        (looking-at "^\\*\\*\\* ")
-                        (looking-at "^$")))
-          (forward-line 1))
-        (delete-region start (point))))))
+  (let ((hl (org-element-map (org-element-parse-buffer) 'headline
+              (lambda (h)
+                (when (and (= (org-element-property :level h) 2)
+                           (string= (org-element-property :raw-value h) "Related Notes"))
+                  h))
+              nil t)))
+    (when hl
+      (delete-region (org-element-property :begin hl)
+                     (org-element-property :end hl)))))
 
 ;;; ============================================================================
 ;;; CORE FUNCTIONS (return elisp data structures)
@@ -421,11 +435,19 @@ Returns list of plists with person and followup details."
                              (source-file (org-roam-node-file source-node)))
                    (with-temp-buffer
                      (insert-file-contents source-file)
-                     (goto-char (point-min))
-                     (while (re-search-forward "^[ \t]*- \\[ \\] \\(.*\\)$" nil t)
-                       (let ((item-text (match-string 1)))
-                         (when (string-match-p (regexp-quote name) item-text)
-                           (push (string-trim item-text) followups)))))))
+                     (delay-mode-hooks (org-mode))
+                     (org-element-map (org-element-parse-buffer) 'item
+                       (lambda (item)
+                         (when (eq (org-element-property :checkbox item) 'off)
+                           (let* ((para (car (org-element-contents item)))
+                                  (text (when (and para
+                                                   (eq (org-element-type para) 'paragraph))
+                                          (string-trim
+                                           (buffer-substring-no-properties
+                                            (org-element-property :contents-begin para)
+                                            (org-element-property :contents-end para))))))
+                             (when (and text (string-match-p (regexp-quote name) text))
+                               (push text followups)))))))))
                (> (length followups) 0)))
            people)))
     (mapcar
@@ -440,11 +462,19 @@ Returns list of plists with person and followup details."
                        (source-file (org-roam-node-file source-node)))
              (with-temp-buffer
                (insert-file-contents source-file)
-               (goto-char (point-min))
-               (while (re-search-forward "^[ \t]*- \\[ \\] \\(.*\\)$" nil t)
-                 (let ((item-text (match-string 1)))
-                   (when (string-match-p (regexp-quote name) item-text)
-                     (push (string-trim item-text) followups)))))))
+               (delay-mode-hooks (org-mode))
+               (org-element-map (org-element-parse-buffer) 'item
+                 (lambda (item)
+                   (when (eq (org-element-property :checkbox item) 'off)
+                     (let* ((para (car (org-element-contents item)))
+                            (text (when (and para
+                                            (eq (org-element-type para) 'paragraph))
+                                    (string-trim
+                                     (buffer-substring-no-properties
+                                      (org-element-property :contents-begin para)
+                                      (org-element-property :contents-end para))))))
+                       (when (and text (string-match-p (regexp-quote name) text))
+                         (push text followups))))))))
          (list :id (org-roam-node-id node)
                :name name
                :file (plist-get p :file)
@@ -461,18 +491,27 @@ Returns list of plists with name, item text, and source file."
     (dolist (file (directory-files-recursively org-roam-directory "\\.org$"))
       (with-temp-buffer
         (insert-file-contents file)
-        (goto-char (point-min))
-        (while (re-search-forward "^[ \t]*- \\[ \\] \\(.*\\[\\[.+\\]\\].*\\)$" nil t)
-          (let* ((item-text (match-string 1))
-                 (names (sb/--extract-link-names item-text)))
-            (dolist (name names)
-              (unless (or (gethash name seen-names)
-                          (sb/--node-exists-p name))
-                (puthash name t seen-names)
-                (push (list :name name
-                            :item (string-trim item-text)
-                            :file file)
-                      dangling)))))))
+        (delay-mode-hooks (org-mode))
+        (org-element-map (org-element-parse-buffer) 'item
+          (lambda (item)
+            (when (and (eq (org-element-property :checkbox item) 'off)
+                       (org-element-map item 'link #'identity nil t))
+              (let* ((para (car (org-element-contents item)))
+                     (text (when (and para (eq (org-element-type para) 'paragraph))
+                             (string-trim
+                              (buffer-substring-no-properties
+                               (org-element-property :contents-begin para)
+                               (org-element-property :contents-end para))))))
+                (when text
+                  (let ((names (sb/--extract-link-names text)))
+                    (dolist (name names)
+                      (unless (or (gethash name seen-names)
+                                  (sb/--node-exists-p name))
+                        (puthash name t seen-names)
+                        (push (list :name name
+                                    :item text
+                                    :file file)
+                              dangling))))))))))
     (nreverse dangling)))
 
 (defun sb/core-unlinked-similar (file &optional threshold)
@@ -514,10 +553,9 @@ Returns list of plists with file, title, and similarity."
                   (similarity (cadr result))
                   (title (with-temp-buffer
                            (insert-file-contents sim-file)
-                           (goto-char (point-min))
-                           (if (re-search-forward "^#\\+title:\\s-*\\(.+\\)$" nil t)
-                               (match-string 1)
-                             (file-name-base sim-file)))))
+                           (delay-mode-hooks (org-mode))
+                           (or (cadr (assoc "TITLE" (org-collect-keywords '("TITLE"))))
+                               (file-name-base sim-file)))))
              (list :file sim-file
                    :title title
                    :similarity similarity)))
@@ -674,23 +712,35 @@ Returns list of plists with post details."
   (when (and file (file-exists-p file))
     (with-temp-buffer
       (insert-file-contents file)
-      (goto-char (point-min))
-      (if (re-search-forward "^#\\+hugo_draft:\\s-*\\(true\\|false\\)" nil t)
-          (string= (match-string 1) "true")
-        t))))  ; Default to draft if not specified
+      (delay-mode-hooks (org-mode))
+      (let ((val (cadr (assoc "HUGO_DRAFT" (org-collect-keywords '("HUGO_DRAFT"))))))
+        (if val
+            (string= val "true")
+          t)))))
 
 (defun sb/--blog-set-draft-value (file value)
   "Set draft status in blog FILE to VALUE (t or nil)."
   (when (and file (file-exists-p file))
     (with-current-buffer (find-file-noselect file)
-      (goto-char (point-min))
-      (if (re-search-forward "^#\\+hugo_draft:\\s-*\\(true\\|false\\)" nil t)
-          (replace-match (format "#+hugo_draft: %s" (if value "true" "false")))
-        ;; Insert if not found
-        (goto-char (point-min))
-        (when (re-search-forward "^#\\+date:" nil t)
-          (end-of-line)
-          (insert (format "\n#+hugo_draft: %s" (if value "true" "false")))))
+      (let* ((tree (org-element-parse-buffer))
+             (draft-kw (org-element-map tree 'keyword
+                         (lambda (kw)
+                           (when (string= (org-element-property :key kw) "HUGO_DRAFT")
+                             kw))
+                         nil t)))
+        (if draft-kw
+            (progn
+              (delete-region (org-element-property :begin draft-kw)
+                             (org-element-property :end draft-kw))
+              (insert (format "#+hugo_draft: %s\n" (if value "true" "false"))))
+          (let ((date-kw (org-element-map tree 'keyword
+                           (lambda (kw)
+                             (when (string= (org-element-property :key kw) "DATE")
+                               kw))
+                           nil t)))
+            (when date-kw
+              (goto-char (org-element-property :end date-kw))
+              (insert (format "#+hugo_draft: %s\n" (if value "true" "false")))))))
       (save-buffer))))
 
 (defun sb/--blog-get-property (file property)
@@ -698,10 +748,17 @@ Returns list of plists with post details."
   (when (and file (file-exists-p file))
     (with-temp-buffer
       (insert-file-contents file)
-      (goto-char (point-min))
-      (when (re-search-forward (format "^:%s:\\s-*\\(.+\\)$"
-                                       (upcase property)) nil t)
-        (string-trim (match-string 1))))))
+      (delay-mode-hooks (org-mode))
+      (let* ((tree (org-element-parse-buffer))
+             (first-section (let ((c (org-element-contents tree)))
+                              (when (eq (org-element-type (car c)) 'section)
+                                (car c)))))
+        (when first-section
+          (org-element-map first-section 'node-property
+            (lambda (np)
+              (when (string= (org-element-property :key np) (upcase property))
+                (string-trim (org-element-property :value np))))
+            nil t)))))
 
 (defun sb/--blog-validate (file)
   "Validate blog FILE has required properties for publishing.
@@ -721,31 +778,40 @@ Returns nil if valid, or a string describing the issue."
   (when (and file (file-exists-p file))
     (with-temp-buffer
       (insert-file-contents file)
-      (goto-char (point-min))
-      ;; Look for Draft section with content
-      (when (re-search-forward "^\\* Draft" nil t)
-        (let ((start (point)))
-          (if (re-search-forward "^\\* " nil t)
-              (> (- (match-beginning 0) start) 50)
-            (> (- (point-max) start) 50)))))))
+      (delay-mode-hooks (org-mode))
+      (let* ((tree (org-element-parse-buffer))
+             (draft-hl (org-element-map tree 'headline
+                         (lambda (h)
+                           (when (string= (org-element-property :raw-value h) "Draft")
+                             h))
+                         nil t)))
+        (when draft-hl
+          (let ((begin (org-element-property :contents-begin draft-hl))
+                (end (org-element-property :contents-end draft-hl)))
+            (and begin end (> (- end begin) 50)))))))
 
 (defun sb/--blog-outline-progress (file)
   "Get outline progress for blog FILE as (completed . total)."
   (when (and file (file-exists-p file))
     (with-temp-buffer
       (insert-file-contents file)
-      (goto-char (point-min))
-      (let ((checked 0) (unchecked 0))
-        (when (re-search-forward "^\\* Outline" nil t)
-          (let ((end (save-excursion
-                       (if (re-search-forward "^\\* " nil t)
-                           (match-beginning 0)
-                         (point-max)))))
-            (while (re-search-forward "^- \\[\\(.\\)\\]" end t)
-              (if (string= (match-string 1) "X")
-                  (cl-incf checked)
-                (cl-incf unchecked)))))
-        (cons checked (+ checked unchecked))))))
+      (delay-mode-hooks (org-mode))
+      (let* ((tree (org-element-parse-buffer))
+             (outline-hl (org-element-map tree 'headline
+                           (lambda (h)
+                             (when (string= (org-element-property :raw-value h) "Outline")
+                               h))
+                           nil t))
+             (checked 0)
+             (unchecked 0))
+        (when outline-hl
+          (org-element-map outline-hl 'item
+            (lambda (item)
+              (pcase (org-element-property :checkbox item)
+                ('on  (cl-incf checked))
+                ('off (cl-incf unchecked))))
+            nil nil 'headline))
+        (cons checked (+ checked unchecked)))))
 
 (defun sb/core-blog-digest-data ()
   "Gather blog-related data for daily digest.
@@ -1023,12 +1089,19 @@ When called interactively, prompts for both."
 
     ;; Add to inbox
     (with-current-buffer (find-file-noselect daily-file)
-      (goto-char (point-min))
-      (if (re-search-forward "^\\* Inbox$" nil t)
-          (progn (end-of-line) (newline))
-        (goto-char (point-max))
-        (unless (bolp) (newline))
-        (insert "* Inbox\n"))
+      (let ((inbox-hl (org-element-map (org-element-parse-buffer) 'headline
+                        (lambda (h)
+                          (when (string= (org-element-property :raw-value h) "Inbox")
+                            h))
+                        nil t)))
+        (if inbox-hl
+            (progn
+              (goto-char (org-element-property :begin inbox-hl))
+              (end-of-line)
+              (newline))
+          (goto-char (point-max))
+          (unless (bolp) (newline))
+          (insert "* Inbox\n")))
       (insert (format "- %s %s\n" timestamp text))
       (save-buffer))
 
@@ -1408,12 +1481,18 @@ Prompts to select an idea and Hugo section."
           ;; Open the new blog post
           (find-file (plist-get result :file))
           ;; Add link to original idea in Research section
-          (goto-char (point-max))
-          (when (re-search-backward "^\\* Research$" nil t)
-            (forward-line 1)
-            (insert (format "- [[id:%s][%s]] (original idea)\n"
-                            (org-roam-node-id (plist-get selected-idea :node))
-                            selected-title)))
+          (let ((research-hl (org-element-map (org-element-parse-buffer) 'headline
+                               (lambda (h)
+                                 (when (string= (org-element-property :raw-value h) "Research")
+                                   h))
+                               nil t)))
+            (when research-hl
+              (goto-char (org-element-property :begin research-hl))
+              (end-of-line)
+              (newline)
+              (insert (format "- [[id:%s][%s]] (original idea)\n"
+                              (org-roam-node-id (plist-get selected-idea :node))
+                              selected-title))))
           (save-buffer)
           (message "Created blog post from idea: %s" selected-title))
       (user-error "Idea not found"))))
@@ -1426,10 +1505,7 @@ Requires `sb/blog-llm-function' to be configured."
   (unless sb/blog-llm-function
     (user-error "sb/blog-llm-function not configured"))
   (let* ((file (buffer-file-name))
-         (title (save-excursion
-                  (goto-char (point-min))
-                  (when (re-search-forward "^#\\+title:\\s-*\\(.+\\)$" nil t)
-                    (match-string 1))))
+         (title (cadr (assoc "TITLE" (org-collect-keywords '("TITLE")))))
          (prompt (format "Generate a detailed blog post outline for: \"%s\"
 
 Create 5-7 main sections with brief descriptions. Format as:
@@ -1439,15 +1515,22 @@ Keep it practical and focused." title))
          (result (funcall sb/blog-llm-function prompt "")))
     (when result
       ;; Find the Outline section and replace content
-      (goto-char (point-min))
-      (when (re-search-forward "^\\* Outline$" nil t)
-        (forward-line 1)
-        (let ((start (point)))
-          ;; Delete until next heading or end
-          (if (re-search-forward "^\\* " nil t)
-              (progn (beginning-of-line) (delete-region start (point)))
-            (delete-region start (point-max)))
-          (insert result "\n\n")))
+      (let ((outline-hl (org-element-map (org-element-parse-buffer) 'headline
+                          (lambda (h)
+                            (when (string= (org-element-property :raw-value h) "Outline")
+                              h))
+                          nil t)))
+        (when outline-hl
+          (let ((begin (org-element-property :contents-begin outline-hl))
+                (end (org-element-property :contents-end outline-hl)))
+            (if (and begin end)
+                (delete-region begin end)
+              (goto-char (org-element-property :begin outline-hl))
+              (end-of-line)
+              (newline)
+              (setq begin (point)))
+            (goto-char begin)
+            (insert result "\n\n"))))
       (save-buffer)
       (message "Outline generated"))))
 
@@ -1458,10 +1541,7 @@ Place cursor on an outline item, and AI will generate content."
   (interactive)
   (unless sb/blog-llm-function
     (user-error "sb/blog-llm-function not configured"))
-  (let* ((title (save-excursion
-                  (goto-char (point-min))
-                  (when (re-search-forward "^#\\+title:\\s-*\\(.+\\)$" nil t)
-                    (match-string 1))))
+  (let* ((title (cadr (assoc "TITLE" (org-collect-keywords '("TITLE")))))
          (current-line (thing-at-point 'line t))
          (section-name (when (string-match "^-\\s-*\\[.?\\]\\s-*\\(.+\\)$" current-line)
                          (match-string 1 current-line)))
@@ -1473,17 +1553,18 @@ Write in a clear, conversational technical style. Be specific and practical."
                          title (or section-name current-line)))
          (result (funcall sb/blog-llm-function prompt "")))
     (when result
-      ;; Insert in Draft section
+      ;; Insert at end of Draft section
       (save-excursion
-        (goto-char (point-min))
-        (when (re-search-forward "^\\* Draft$" nil t)
-          (goto-char (point-max))
-          (if (re-search-backward "^\\* " nil t)
-              (forward-line 0)
-            (goto-char (point-max)))
-          (insert (format "\n** %s\n\n%s\n"
-                          (or section-name "Section")
-                          result))))
+        (let ((draft-hl (org-element-map (org-element-parse-buffer) 'headline
+                          (lambda (h)
+                            (when (string= (org-element-property :raw-value h) "Draft")
+                              h))
+                          nil t)))
+          (when draft-hl
+            (goto-char (org-element-property :contents-end draft-hl))
+            (insert (format "\n** %s\n\n%s\n"
+                            (or section-name "Section")
+                            result)))))
       (save-buffer)
       (message "Section expanded"))))
 
@@ -1528,10 +1609,16 @@ Uses embeddings to find related notes that aren't already linked."
           (when selected
             ;; Find Research section and add links
             (save-excursion
-              (goto-char (point-min))
-              (when (re-search-forward "^\\* Research$" nil t)
-                (forward-line 1)
-                (dolist (sel selected)
+              (let ((research-hl (org-element-map (org-element-parse-buffer) 'headline
+                                   (lambda (h)
+                                     (when (string= (org-element-property :raw-value h) "Research")
+                                       h))
+                                   nil t)))
+                (when research-hl
+                  (goto-char (org-element-property :begin research-hl))
+                  (end-of-line)
+                  (newline)
+                  (dolist (sel selected)
                   (let* ((title (string-trim (substring sel 5)))  ; Remove similarity prefix
                          (match (seq-find (lambda (s) (string= (plist-get s :title) title))
                                           suggestions)))
