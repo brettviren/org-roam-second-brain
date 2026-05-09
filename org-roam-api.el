@@ -439,7 +439,7 @@ Returns semantically similar notes with full content for RAG applications."
                    (original_request . ,original-request)
                    (current_draft . ,(or current-draft ""))
                    (created . ,created)
-                   (has_content . ,(not (string-empty-p (or current-draft ""))))))))
+                   (has_content . ,(not (string-empty-p (or current-draft "")))))))
           (error
            (my/api--json-response
             `((success . nil)
@@ -1312,7 +1312,7 @@ Scans all org files for unchecked items mentioning untracked people."
     (my/api--json-response
      `((success . t)
        (total . ,(length dangling-items))
-       (untracked_people . ,(nreverse dangling-items))))))
+       (untracked_people . ,(nreverse dangling-items)))))))
 
 (defun my/api--node-exists-p (title)
   "Check if an org-roam node with TITLE exists."
