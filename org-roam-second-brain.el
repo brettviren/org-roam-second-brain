@@ -474,7 +474,7 @@ Returns list of plists with person and followup details."
                                       (org-element-property :contents-begin para)
                                       (org-element-property :contents-end para))))))
                        (when (and text (string-match-p (regexp-quote name) text))
-                         (push text followups))))))))
+                         (push text followups)))))))))
          (list :id (org-roam-node-id node)
                :name name
                :file (plist-get p :file)
@@ -511,7 +511,7 @@ Returns list of plists with name, item text, and source file."
                         (push (list :name name
                                     :item text
                                     :file file)
-                              dangling))))))))))
+                              dangling)))))))))))
     (nreverse dangling)))
 
 (defun sb/core-unlinked-similar (file &optional threshold)
@@ -758,7 +758,7 @@ Returns list of plists with post details."
             (lambda (np)
               (when (string= (org-element-property :key np) (upcase property))
                 (string-trim (org-element-property :value np))))
-            nil t)))))
+            nil t))))))
 
 (defun sb/--blog-validate (file)
   "Validate blog FILE has required properties for publishing.
@@ -788,7 +788,7 @@ Returns nil if valid, or a string describing the issue."
         (when draft-hl
           (let ((begin (org-element-property :contents-begin draft-hl))
                 (end (org-element-property :contents-end draft-hl)))
-            (and begin end (> (- end begin) 50)))))))
+            (and begin end (> (- end begin) 50))))))))
 
 (defun sb/--blog-outline-progress (file)
   "Get outline progress for blog FILE as (completed . total)."
@@ -811,7 +811,7 @@ Returns nil if valid, or a string describing the issue."
                 ('on  (cl-incf checked))
                 ('off (cl-incf unchecked))))
             nil nil 'headline))
-        (cons checked (+ checked unchecked)))))
+        (cons checked (+ checked unchecked))))))
 
 (defun sb/core-blog-digest-data ()
   "Gather blog-related data for daily digest.
@@ -1630,7 +1630,7 @@ Uses embeddings to find related notes that aren't already linked."
                                           title)))))))))
             (save-buffer)
             (message "Added %d research links" (length selected))))
-      (message "No similar unlinked notes found"))))
+      (message "No similar unlinked notes found")))))
 
 ;;;###autoload
 (defun sb/blog-publish ()
