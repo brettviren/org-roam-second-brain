@@ -133,6 +133,25 @@ Or use `M-x customize-group RET sb RET`.
 | `C-c b D L` | `sb/daily-link-all` | Batch link all daily files |
 | `C-c b D c` | `sb/daily-connections` | Show daily connections report |
 
+### Menus
+
+A hydra and a transient menu can also give access to the commands.  Here shows one example of adding both:
+
+```emacs-lisp
+(use-package org-roam-second-brain
+  :load-path "~/dev/org-roam-second-brain"
+  :after org-roam
+  :straight nil
+  :bind
+  ("C-c n h" . sb/hydra/body)
+  ("C-c n t" . sb/transient)
+  :config
+  (require 'org-roam-second-brain-hydra)
+  (require 'org-roam-second-brain-transient))
+```
+
+
+
 ### Buffer Navigation (in result buffers)
 
 | Key | Description |
