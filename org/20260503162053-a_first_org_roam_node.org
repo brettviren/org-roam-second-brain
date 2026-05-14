@@ -1,0 +1,7 @@
+:PROPERTIES:
+:ID:       08403098-4998-419b-b633-0b7db399a9e5
+:END:
+#+title: A first org-roam node
+
+Here is the first org-roam test node.
+
